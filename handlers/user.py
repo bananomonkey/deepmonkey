@@ -114,6 +114,55 @@ async def cmd_clearchat(message: Message) -> None:
     await message.answer("🧹 История текущего чата очищена.")
 
 
+@router.callback_query(F.data.startswith("chat_switch:"))
+async def cb_chat_switch(callback: CallbackQuery) -> None:
+    chat_id = callback.data.split(":", 1)[1]
+    ok = await chat_sessions.switch_chat(callback.from_user.id, chat_id)
+    if not ok:
+        await callback.answer("Чат не найден", show_alert=True)
+        return
+    await callback.answer("Переключено")
+    chats = chat_sessions.list_chats(callback.from_user.id)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=chats_list_kb(chats))
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(F.data.startswith("chat_delete:"))
+async def cb_chat_delete(callback: CallbackQuery) -> None:
+    chat_id = callback.data.split(":", 1)[1]
+    ok = await chat_sessions.delete_chat(callback.from_user.id, chat_id)
+    if not ok:
+        await callback.answer("⚠️ Нужно оставить минимум 2 чата.", show_alert=True)
+        return
+    await callback.answer("Удалено")
+    chats = chat_sessions.list_chats(callback.from_user.id)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=chats_list_kb(chats))
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(F.data == "chat_new")
+async def cb_chat_new(callback: CallbackQuery) -> None:
+    chat_id = await chat_sessions.create_chat(callback.from_user.id)
+    if chat_id is None:
+        await callback.answer(f"Лимит чатов: {config.MAX_CHATS_PER_USER}", show_alert=True)
+        return
+    await callback.answer("Создано")
+    chats = chat_sessions.list_chats(callback.from_user.id)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=chats_list_kb(chats))
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(F.data == "noop")
+async def noop_callback(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
 # ============================================================
 #  Модель — /model
 # ============================================================
@@ -204,11 +253,6 @@ async def cb_user_edit_prompt_wrong_type(message: Message) -> None:
         "⚠️ Пришлите промпт текстовым сообщением.",
         reply_markup=user_prompt_cancel_kb(),
     )
-
-
-@router.callback_query(F.data == "noop")
-async def noop_callback(callback: CallbackQuery) -> None:
-    await callback.answer()
 
 
 @router.message(F.text, F.chat.type == "private")
