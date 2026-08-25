@@ -24,8 +24,8 @@ BROADCAST_DELAY_SECONDS = float(os.getenv("BROADCAST_DELAY_SECONDS", "0.05"))
 # --- Антиспам: не более RATE_LIMIT_MESSAGES запросов за RATE_LIMIT_WINDOW_SECONDS ---
 # Защищает токены DeepSeek от выжигания спамом и грубо ограничивает
 # возможность заDDoS'ить бота потоком сообщений/инлайн-запросов.
-RATE_LIMIT_MESSAGES = int(os.getenv("RATE_LIMIT_MESSAGES", "5"))
-RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "20"))
+RATE_LIMIT_MESSAGES = int(os.getenv("RATE_LIMIT_MESSAGES", "20"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 # --- Профиль пользователя для персонализации ИИ ---
 # Каждые N сообщений бот в фоне обновляет краткую заметку об интересах

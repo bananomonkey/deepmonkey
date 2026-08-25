@@ -68,18 +68,29 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
 
 SEARCH_DECISION_PROMPT = (
-    "Тебе дан запрос пользователя. Ты решаешь, нужны ли тебе актуальные данные "
-    "из интернета для качественного ответа. Если да — ответь СТРОКОЙ:\n"
-    "SEARCH: <поисковый запрос на английском или русском, оптимальный для поисковика>\n"
-    "Если нет — ответь только:\n"
-    "NOSEARCH\n"
+    "Ты решаешь, нужно ли сделать веб-поиск перед ответом.\n"
+    "ИЩИ если есть МАЛЫЙШЕЕ сомнение что ответ может содержать актуальные данные:\n"
+    "- факты о людях, компаниях, событиях\n"
+    "- новости, погода, курсы, результаты\n"
+    "- любая информация которая могла измениться или быть незнаемой\n\n"
+    "НЕ ищи ТОЛЬКО если это:\n"
+    "- математика, код, объяснение концепций\n"
+    "- творческая задача (стик, история, перевод)\n"
+    "- общеизвестные факты (столица Франции = Париж)\n\n"
+    "Формат ответа — ОДНА строка:\n"
+    "SEARCH: <поисковый запрос>\n"
+    "или\n"
+    "NOSEARCH\n\n"
     "Примеры:\n"
-    "Запрос: «Кто президент Франции?» → SEARCH: president of France 2026\n"
-    "Запрос: «Что такое Python?» → NOSEARCH\n"
-    "Запрос: «Курс доллара сегодня» → SEARCH: USD to RUB exchange rate today\n"
-    "Запрос: «Напиши стих» → NOSEARCH\n"
-    "Запрос: «Какие новости в ИТ сегодня?» → SEARCH: IT news today 2026\n"
-    "Не объясняй свой выбор. Только SEARCH: или NOSEARCH."
+    "«Кто президент Франции?» → SEARCH: президент Франции 2026\n"
+    "«Какая погода в Москве?» → SEARCH: погода Москва сегодня\n"
+    "«Курс доллара» → SEARCH: курс доллара рубль сегодня\n"
+    "«Что нового в ИТ?» → SEARCH: новости IT технологии 2026\n"
+    "«Кто прилетел в Москву на военном самолёте?» → SEARCH: военные самолёты прилет Москва сегодня\n"
+    "«Напиши стих» → NOSEARCH\n"
+    "«Что такое контейнер?» → NOSEARCH\n"
+    "«Объясни async/await» → NOSEARCH\n"
+    "Сомневаешься? → ищи. Лучше поискать лишний раз, чем дать неполный ответ."
 )
 
 
@@ -101,9 +112,9 @@ async def _ai_decides_search(
         if answer.upper().startswith("SEARCH:"):
             query = answer[len("SEARCH:"):].strip()
             if query:
-                logger.info("AI решил искать: '%s' (для запроса: %s)", query, user_text[:80])
+                logger.info("AI решил искать: '%s' (для: %s)", query, user_text[:80])
                 return query
-        logger.info("AI решил не искать для: %s", user_text[:80])
+        logger.info("AI решил не искать: %s", user_text[:80])
         return None
     except Exception as e:
         logger.error("Ошибка при решении о поиске: %s", e)
@@ -154,15 +165,17 @@ async def ask_deepseek_with_search(
     if search_query:
         search_context = await web_search(search_query)
 
-    augmented_prompt = system_prompt
     if search_context:
-        augmented_prompt += (
-            "\n\n[Актуальные данные из веб-поиска — используй если релевантно, "
-            "не зачитывай источник дословно]:\n" + search_context
+        user_text = (
+            user_text
+            + "\n\n[Результаты веб-поиска по этому запросу. "
+            "ОБЯЗАТЕЛЬНО используй эти данные для ответа, "
+            "перескажи своими словами со ссылками на источники]:\n"
+            + search_context
         )
 
     return await ask_deepseek(
-        augmented_prompt, user_text, history=history,
+        system_prompt, user_text, history=history,
         model=model, use_thinking=use_thinking,
     )
 
