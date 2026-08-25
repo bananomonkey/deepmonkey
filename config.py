@@ -38,6 +38,8 @@ HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "12"))
 
 # --- Мультичаты (личка) ---
 MAX_CHATS_PER_USER = int(os.getenv("MAX_CHATS_PER_USER", "5"))
+MIN_CHATS_PER_USER = 2
+USER_SETTINGS_FILE_PATH = os.getenv("USER_SETTINGS_FILE_PATH", "user_settings.json")
 
 # --- Валидация ---
 if not BOT_TOKEN:

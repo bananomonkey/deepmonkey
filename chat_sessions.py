@@ -41,8 +41,32 @@ class ChatSessionStore:
                 raw = json.load(f)
             self._data = {int(uid): rec for uid, rec in raw.items()}
             logger.info("Загружены чаты для %d пользователей из %s", len(self._data), self.file_path)
+            self._migrate()
         except Exception as e:
             logger.error("Не удалось прочитать файл сессий чатов (%s): %s", self.file_path, e)
+
+    def _migrate(self) -> None:
+        changed = False
+        for uid, rec in self._data.items():
+            if len(rec.get("chats", {})) < config.MIN_CHATS_PER_USER:
+                while len(rec.get("chats", {})) < config.MIN_CHATS_PER_USER:
+                    chat_id = self._new_chat_id()
+                    rec.setdefault("chats", {})[chat_id] = {
+                        "name": f"Чат {len(rec['chats'])}",
+                        "created": _now_iso(),
+                        "history": [],
+                    }
+                if rec.get("active") not in rec["chats"]:
+                    rec["active"] = next(iter(rec["chats"].keys()))
+                changed = True
+                logger.info("Миграция: пользователь %s получил чаты до минимума (%d)", uid, config.MIN_CHATS_PER_USER)
+        if changed:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_soon(lambda: asyncio.ensure_future(self._save_to_disk()))
+            except RuntimeError:
+                pass
 
     @staticmethod
     def _new_chat_id() -> str:
@@ -137,11 +161,8 @@ class ChatSessionStore:
             rec = self._ensure_user(user_id)
             if chat_id not in rec["chats"]:
                 return False
-            if len(rec["chats"]) == 1:
-                # нельзя удалить последний чат — просто очищаем его историю
-                rec["chats"][chat_id]["history"] = []
-                await self._save_to_disk()
-                return True
+            if len(rec["chats"]) <= config.MIN_CHATS_PER_USER:
+                return False
             del rec["chats"][chat_id]
             if rec["active"] == chat_id:
                 rec["active"] = next(iter(rec["chats"].keys()))

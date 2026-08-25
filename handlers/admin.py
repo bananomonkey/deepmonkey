@@ -14,6 +14,7 @@ from md_format import markdown_to_html
 from model_manager import model_manager
 from prompt_manager import prompt_manager
 from states import AdminStates
+from user_settings import user_settings
 from user_storage import user_storage
 
 logger = logging.getLogger(__name__)
@@ -151,16 +152,30 @@ async def show_stats(callback: CallbackQuery) -> None:
 
 
 # ============================================================
-#  Профиль пользователя
+#  Пользователи в базе
 # ============================================================
 
-@router.callback_query(F.data == "admin_view_profile")
-async def view_profile_start(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data == "admin_view_users")
+async def view_users_list(callback: CallbackQuery, state: FSMContext) -> None:
+    all_ids = user_storage.get_all()
+    if not all_ids:
+        await callback.message.answer("База пользователей пуста.", reply_markup=admin_menu_kb())
+        await callback.answer()
+        return
+
+    lines = ["👥 <b>Пользователи в базе:</b>\n"]
+    for i, uid in enumerate(sorted(all_ids), 1):
+        rec = user_storage.get_record(uid)
+        if not rec:
+            continue
+        username = f"@{rec['username']}" if rec.get("username") else "—"
+        name = rec.get("full_name") or "—"
+        banned = " 🚫" if rec.get("banned") else ""
+        lines.append(f"{i}. <code>{uid}</code> — {username} — {name}{banned}")
+
+    lines.append("\nВведите Telegram ID для просмотра карточки:")
     await state.set_state(AdminStates.waiting_for_profile_user_id)
-    await callback.message.answer(
-        "Введите Telegram ID пользователя, чей профиль хотите посмотреть.",
-        reply_markup=cancel_kb(),
-    )
+    await callback.message.answer("\n".join(lines), reply_markup=cancel_kb())
     await callback.answer()
 
 
@@ -183,6 +198,11 @@ async def view_profile_finish(message: Message, state: FSMContext) -> None:
     status = "🚫 забанен" if record.get("banned") else "активен"
     username = f"@{record['username']}" if record.get("username") else "—"
 
+    model_key = user_settings.get_model(user_id)
+    model_label = "⚡ Быстрая" if model_key == "fast" else "🧠 Думающая"
+    custom_prompt = user_settings.get_system_prompt(user_id)
+    custom_prompt_display = f"<code>{custom_prompt}</code>" if custom_prompt else "— не задан —"
+
     await message.answer(
         f"👤 <b>Пользователь {user_id}</b>\n"
         f"Имя: {record.get('full_name') or '—'}\n"
@@ -191,6 +211,8 @@ async def view_profile_finish(message: Message, state: FSMContext) -> None:
         f"Сообщений отправлено: {record.get('message_count', 0)}\n"
         f"Первое обращение: {record.get('first_seen', '—')}\n"
         f"Последняя активность: {record.get('last_seen', '—')}\n\n"
+        f"⚙️ Модель: {model_label}\n"
+        f"🧠 Пользовательский промпт:\n{custom_prompt_display}\n\n"
         f"📝 Заметка ИИ о пользователе (интересы/факты):\n{profile_text}",
         reply_markup=admin_menu_kb(),
     )

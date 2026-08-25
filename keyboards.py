@@ -9,7 +9,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔄 Сбросить промт", callback_data="admin_reset_prompt")],
             [InlineKeyboardButton(text="🤖 Сменить модель DeepSeek", callback_data="admin_change_model")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-            [InlineKeyboardButton(text="👤 Профиль пользователя", callback_data="admin_view_profile")],
+            [InlineKeyboardButton(text="👥 Пользователи в базе", callback_data="admin_view_users")],
             [InlineKeyboardButton(text="✉️ Написать пользователю", callback_data="admin_direct_message")],
             [InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="🚫 Забанить пользователя", callback_data="admin_ban_user")],
@@ -36,7 +36,6 @@ def confirm_broadcast_kb() -> InlineKeyboardMarkup:
 
 
 def chats_list_kb(chats: list) -> InlineKeyboardMarkup:
-    """Список чатов пользователя: кнопка переключения + кнопка удаления в каждой строке."""
     rows = []
     for chat in chats:
         label = ("✅ " if chat["active"] else "") + chat["name"]
@@ -51,9 +50,33 @@ def chats_list_kb(chats: list) -> InlineKeyboardMarkup:
 
 
 def inline_placeholder_kb() -> InlineKeyboardMarkup:
-    """
-    Пустая на вид клавиатура, приклеенная к inline-результату. Без неё
-    Telegram не пришлёт inline_message_id в chosen_inline_result, и бот не
-    сможет отредактировать сообщение (показать анимацию/финальный ответ).
-    """
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏳", callback_data="noop")]])
+
+
+def model_select_kb(current_model: str) -> InlineKeyboardMarkup:
+    fast_label = "⚡ Быстрая" + (" ✅" if current_model == "fast" else "")
+    think_label = "🧠 Думающая" + (" ✅" if current_model == "thinking" else "")
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=fast_label, callback_data="set_model:fast")],
+            [InlineKeyboardButton(text=think_label, callback_data="set_model:thinking")],
+        ]
+    )
+
+
+def user_prompt_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📄 Текущий промпт", callback_data="user_show_prompt")],
+            [InlineKeyboardButton(text="✏️ Изменить промпт", callback_data="user_edit_prompt")],
+            [InlineKeyboardButton(text="🔄 Сбросить промпт", callback_data="user_reset_prompt")],
+        ]
+    )
+
+
+def user_prompt_cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="user_prompt_cancel")],
+        ]
+    )
