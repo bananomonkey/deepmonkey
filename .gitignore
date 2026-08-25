@@ -1,0 +1,19 @@
+# Секреты — никогда не коммитим
+.env
+
+# Runtime-файлы, которые бот создаёт сам во время работы
+system_prompt.txt
+current_model.txt
+users.json
+chats.json
+reply_context.json
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
