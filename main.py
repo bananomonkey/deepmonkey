@@ -40,6 +40,12 @@ async def main() -> None:
         "ВНИМАНИЕ: Для inline ОБЯЗАТЕЛЬНО включите inline feedback в @BotFather: "
         "/setinlinefeedback → Enable → 100%%"
     )
+    if not config.TAVILY_API_KEY:
+        logger.warning(
+            "ВНИМАНИЕ: TAVILY_API_KEY не задан! Веб-поиск будет использовать "
+            "DuckDuckGo/Википедию, которые часто rate-limit серверы. "
+            "Добавьте TAVILY_API_KEY в .env для надёжного поиска."
+        )
 
     await dp.start_polling(bot, allowed_updates=allowed)
 

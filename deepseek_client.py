@@ -61,7 +61,7 @@ async def _search_duckduckgo(query: str, max_results: int = 5) -> str:
     if ddgs is None:
         return ""
     loop = asyncio.get_running_loop()
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             results = await loop.run_in_executor(
                 None, lambda: list(ddgs.text(query, max_results=max_results))
@@ -69,16 +69,19 @@ async def _search_duckduckgo(query: str, max_results: int = 5) -> str:
             if results:
                 return _format_ddg_results(results)
         except Exception as e:
-            logger.warning("DuckDuckGo попытка %d/3 не удалась: %s", attempt + 1, e)
-        await asyncio.sleep(2 * (attempt + 1))
+            logger.warning("DuckDuckGo попытка %d/2 не удалась: %s", attempt + 1, e)
+        await asyncio.sleep(1)
     logger.warning("DuckDuckGo поиск не дал результатов (rate limit?) для: %s", query)
     return ""
 
 
 async def _search_wikipedia(query: str, max_results: int = 5) -> str:
     import httpx
+    headers = {
+        "User-Agent": "DeepMonkeyBot/1.0 (https://github.com/bananomonkey/deepmonkey)"
+    }
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10, headers=headers) as client:
             resp = await client.get(
                 "https://ru.wikipedia.org/w/api.php",
                 params={
