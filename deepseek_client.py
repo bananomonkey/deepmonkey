@@ -1,5 +1,8 @@
+import asyncio
 import logging
+import re
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
 from openai import AsyncOpenAI
 
@@ -43,28 +46,73 @@ def _get_search_client():
     return _search_client
 
 
-async def web_search(query: str, max_results: int = 5) -> str:
+def _format_ddg_results(results) -> str:
+    parts = []
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "")
+        body = r.get("body", "")
+        href = r.get("href", "")
+        parts.append(f"{i}. {title}\n{body}\n{href}")
+    return "\n\n".join(parts)
+
+
+async def _search_duckduckgo(query: str, max_results: int = 5) -> str:
     ddgs = _get_search_client()
     if ddgs is None:
         return ""
+    loop = asyncio.get_running_loop()
+    for attempt in range(3):
+        try:
+            results = await loop.run_in_executor(
+                None, lambda: list(ddgs.text(query, max_results=max_results))
+            )
+            if results:
+                return _format_ddg_results(results)
+        except Exception as e:
+            logger.warning("DuckDuckGo попытка %d/3 не удалась: %s", attempt + 1, e)
+        await asyncio.sleep(2 * (attempt + 1))
+    logger.warning("DuckDuckGo поиск не дал результатов (rate limit?) для: %s", query)
+    return ""
+
+
+async def _search_wikipedia(query: str, max_results: int = 5) -> str:
+    import httpx
     try:
-        import asyncio
-        loop = asyncio.get_running_loop()
-        results = await loop.run_in_executor(
-            None, lambda: list(ddgs.text(query, max_results=max_results))
-        )
-        if not results:
-            return ""
-        parts = []
-        for i, r in enumerate(results, 1):
-            title = r.get("title", "")
-            body = r.get("body", "")
-            href = r.get("href", "")
-            parts.append(f"{i}. {title}\n{body}\n{href}")
-        return "\n\n".join(parts)
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://ru.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "format": "json",
+                    "srlimit": max_results,
+                    "srprop": "snippet",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            hits = data.get("query", {}).get("search", [])
+            if not hits:
+                return ""
+            parts = []
+            for i, h in enumerate(hits, 1):
+                title = h.get("title", "")
+                snippet = re.sub(r"<[^>]+>", "", h.get("snippet", ""))
+                page_url = f"https://ru.wikipedia.org/wiki/{quote(title)}"
+                parts.append(f"{i}. {title} (Википедия)\n{snippet}\n{page_url}")
+            return "\n\n".join(parts)
     except Exception as e:
-        logger.error("Ошибка DuckDuckGo поиска: %s", e)
+        logger.error("Ошибка поиска в Википедии: %s", e)
         return ""
+
+
+async def web_search(query: str, max_results: int = 5) -> str:
+    results = await _search_duckduckgo(query, max_results)
+    if results:
+        return results
+    logger.info("DuckDuckGo недоступен, пробую Википедию для: %s", query)
+    return await _search_wikipedia(query, max_results)
 
 
 SEARCH_DECISION_PROMPT = (
