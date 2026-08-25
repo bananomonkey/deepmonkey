@@ -12,6 +12,10 @@ _admin_id_raw = os.getenv("ADMIN_ID", "0")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")  # стартовое значение, дальше меняется через /admin
 
+# --- Веб-поиск ---
+# Tavily — основной поисковик для ИИ (RAG). Бесплатно 1000 запросов/мес.
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+
 PROMPT_FILE_PATH = os.getenv("PROMPT_FILE_PATH", "system_prompt.txt")
 MODEL_FILE_PATH = os.getenv("MODEL_FILE_PATH", "current_model.txt")
 USERS_FILE_PATH = os.getenv("USERS_FILE_PATH", "users.json")

@@ -107,7 +107,44 @@ async def _search_wikipedia(query: str, max_results: int = 5) -> str:
         return ""
 
 
+async def _search_tavily(query: str, max_results: int = 5) -> str:
+    if not config.TAVILY_API_KEY:
+        return ""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": config.TAVILY_API_KEY,
+                    "query": query,
+                    "search_depth": "basic",
+                    "include_answer": True,
+                    "max_results": max_results,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            parts = []
+            answer = data.get("answer", "")
+            if answer:
+                parts.append(f"Краткий ответ Tavily:\n{answer}\n")
+            for i, r in enumerate(data.get("results", []), 1):
+                title = r.get("title", "")
+                content = r.get("content", "")
+                url = r.get("url", "")
+                parts.append(f"{i}. {title}\n{content}\n{url}")
+            return "\n\n".join(parts) if parts else ""
+    except Exception as e:
+        logger.error("Ошибка поиска Tavily: %s", e)
+        return ""
+
+
 async def web_search(query: str, max_results: int = 5) -> str:
+    results = await _search_tavily(query, max_results)
+    if results:
+        return results
+    logger.info("Tavily недоступен, пробую DuckDuckGo для: %s", query)
     results = await _search_duckduckgo(query, max_results)
     if results:
         return results
