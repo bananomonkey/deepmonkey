@@ -366,8 +366,9 @@ async def handle_group_reply(message: Message, bot: Bot) -> None:
 # ============================================================
 
 INLINE_CHUNK_SIZE = 8
-INLINE_EDIT_DELAY = 0.18
-INLINE_INITIAL_DELAY = 0.5
+INLINE_EDIT_DELAY = 0.25
+INLINE_INITIAL_DELAY = 0.3
+INLINE_DEEPSEEK_TIMEOUT = 90
 
 
 @router.inline_query()
@@ -442,9 +443,20 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
     use_thinking = user_settings.use_thinking(user_id)
 
     try:
-        answer = await ask_deepseek_with_search(
-            system_prompt, query_text, model=model_id, use_thinking=use_thinking,
+        answer = await asyncio.wait_for(
+            ask_deepseek_with_search(
+                system_prompt, query_text, model=model_id, use_thinking=use_thinking,
+            ),
+            timeout=INLINE_DEEPSEEK_TIMEOUT,
         )
+    except asyncio.TimeoutError:
+        logger.error("INLINE таймаут DeepSeek (%ds) для user=%s", INLINE_DEEPSEEK_TIMEOUT, user_id)
+        answer = "⚠️ Превышен таймаут ответа. Попробуйте более короткий вопрос."
+        try:
+            await bot.edit_message_text(answer, inline_message_id=inline_message_id)
+        except Exception as e2:
+            logger.error("INLINE edit failed (timeout msg): %s", e2)
+        return
     except Exception as e:
         logger.error("INLINE ошибка DeepSeek: %s", e)
         answer = "⚠️ Ошибка при обращении к нейросети."
