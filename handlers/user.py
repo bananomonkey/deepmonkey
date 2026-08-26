@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from aiogram import Router, F, Bot
-from aiogram.enums import ChatAction
+from aiogram.enums import ChatAction, MessageEntityType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -301,20 +301,57 @@ async def handle_text(message: Message, bot: Bot) -> None:
 
 
 # ============================================================
-#  Реплаи в группах (если ответили на сообщение бота)
+#  Группы: ответ на сообщение бота ИЛИ упоминание @bot
 # ============================================================
 
-@router.message(F.chat.type.in_({"group", "supergroup"}), F.reply_to_message, F.text)
-async def handle_group_reply(message: Message, bot: Bot) -> None:
+def _is_reply_to_bot(message: Message, bot: Bot) -> bool:
     reply_to = message.reply_to_message
-    is_reply_to_bot = bool(reply_to.from_user and reply_to.from_user.id == bot.id) or bool(
+    if not reply_to:
+        return False
+    return bool(reply_to.from_user and reply_to.from_user.id == bot.id) or bool(
         getattr(reply_to, "via_bot", None) and reply_to.via_bot and reply_to.via_bot.id == bot.id
     )
-    if not is_reply_to_bot:
-        return
 
+
+def _is_bot_mentioned(message: Message, bot: Bot) -> bool:
+    text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    for e in entities:
+        if e.type == MessageEntityType.TEXT_MENTION and e.user and e.user.id == bot.id:
+            return True
+        if e.type == MessageEntityType.MENTION:
+            mention = text[e.offset:e.offset + e.length]
+            if mention.lstrip("@") == bot.username:
+                return True
+    return False
+
+
+def _strip_mentions(text: str, entities) -> str:
+    """Убирает из текста @упоминания бота, возвращает чистый вопрос."""
+    if not entities:
+        return text
+    chars = list(text)
+    for e in sorted(entities, key=lambda x: x.offset, reverse=True):
+        if e.type in (MessageEntityType.MENTION, MessageEntityType.TEXT_MENTION):
+            for i in range(e.offset, e.offset + e.length):
+                chars[i] = " "
+    return " ".join("".join(chars).split())
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}), F.text)
+async def handle_group_message(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
 
+    if _is_reply_to_bot(message, bot):
+        await _handle_group_reply_continuation(message, bot, user_id)
+        return
+
+    if _is_bot_mentioned(message, bot):
+        await _handle_group_mention(message, bot, user_id)
+
+
+async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: int) -> None:
+    """Продолжение диалога: кто-то ответил реплаем на сообщение бота (инлайн)."""
     if user_storage.is_banned(user_id):
         return
 
@@ -322,6 +359,7 @@ async def handle_group_reply(message: Message, bot: Bot) -> None:
         await message.reply("⏳ Слишком много сообщений подряд. Подождите немного.")
         return
 
+    reply_to = message.reply_to_message
     await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
@@ -361,12 +399,58 @@ async def handle_group_reply(message: Message, bot: Bot) -> None:
     await reply_context_store.save_context(answer, new_history, user_id)
 
 
+async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> None:
+    """Пользователь упомянул @bot в группе — бот отвечает реплаем на это сообщение."""
+    if user_storage.is_banned(user_id):
+        return
+
+    if not await rate_limiter.allow(user_id):
+        await message.reply("⏳ Слишком много сообщений подряд. Подождите немного.")
+        return
+
+    question = _strip_mentions(message.text or "", message.entities or message.caption_entities)
+    if not question:
+        await message.reply("Задай вопрос после упоминания бота.")
+        return
+
+    await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
+    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+    await chat_sessions.ensure_user(user_id)
+    history = chat_sessions.get_history(user_id)
+
+    profile = user_storage.get_profile(user_id)
+    user_custom_prompt = user_settings.get_system_prompt(user_id)
+    system_prompt = build_full_system_prompt(profile, user_custom_prompt)
+
+    model_id = user_settings.get_model_id(user_id)
+    use_thinking = user_settings.use_thinking(user_id)
+
+    try:
+        answer = await ask_deepseek_with_search(
+            system_prompt, question, history=history,
+            model=model_id, use_thinking=use_thinking,
+        )
+    except Exception as e:
+        logger.error("Ошибка при ответе на упоминание в группе: %s", e)
+        answer = "⚠️ Произошла ошибка. Попробуйте позже."
+
+    html_answer = markdown_to_html(answer)
+    try:
+        await message.reply(html_answer)
+    except TelegramBadRequest:
+        await message.reply(answer, parse_mode=None)
+
+    await chat_sessions.append_message(user_id, "user", question)
+    await chat_sessions.append_message(user_id, "assistant", answer)
+
+
 # ============================================================
 #  Инлайн-режим — typewriter-анимация
 # ============================================================
 
-INLINE_CHUNK_SIZE = 8
-INLINE_EDIT_DELAY = 0.25
+INLINE_CHUNK_SIZE = 20
+INLINE_EDIT_DELAY = 0.1
 INLINE_INITIAL_DELAY = 0.3
 INLINE_DEEPSEEK_TIMEOUT = 90
 
