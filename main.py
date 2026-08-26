@@ -35,6 +35,7 @@ async def main() -> None:
         UpdateType.MESSAGE,
         UpdateType.CALLBACK_QUERY,
         UpdateType.INLINE_QUERY,
+        UpdateType.CHOSEN_INLINE_RESULT,
         UpdateType.GUEST_MESSAGE,
     ]
 

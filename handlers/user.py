@@ -8,6 +8,8 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
+    ChosenInlineResult,
+    InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
     Message,
@@ -446,6 +448,8 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 # ============================================================
 #  Инлайн-режим — Guest Mode (@bot запрос)
 # ============================================================
+#  Инлайн-режим — Guest Mode (@bot запрос)
+# ============================================================
 
 INLINE_DEEPSEEK_TIMEOUT = 90
 
@@ -473,11 +477,36 @@ async def _get_ai_answer(user_id: int, query_text: str) -> str:
         return "⚠️ Ошибка при обращении к нейросети."
 
 
-async def _answer_guest_query_with_result(message: Message, bot: Bot, answer: str) -> None:
-    """Ответить через answerGuestQuery — единственный правильный метод для Guest Mode.
+# --- Inline query: показать бота в панели инлайна ---
 
-    Заменяет сообщение созданное Telegram (InputTextMessageContent) на ответ ИИ.
+@router.inline_query()
+async def handle_inline(inline_query: InlineQuery) -> None:
+    """Показываем результат в панели инлайна.
+
+    Обработка выбора идёт через guest_message (Guest Mode) или
+    chosen_inline_result (fallback).
     """
+    query_text = inline_query.query.strip()
+
+    if not query_text:
+        await inline_query.answer([], cache_time=1, is_personal=True)
+        return
+
+    results = [
+        InlineQueryResultArticle(
+            id="ask",
+            title="Спросить ИИ",
+            description=query_text[:100],
+            input_message_content=InputTextMessageContent(message_text=query_text),
+        )
+    ]
+    await inline_query.answer(results, cache_time=1, is_personal=True)
+
+
+# --- Guest Mode: основной путь для @bot запросов ---
+
+async def _answer_guest_query_with_result(message: Message, bot: Bot, answer: str) -> None:
+    """Ответить через answerGuestQuery — правильный метод для Guest Mode."""
     html_answer = markdown_to_html(answer)
     result = InlineQueryResultArticle(
         id="answer",
@@ -518,8 +547,6 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
 
     Telegram присылает guest_message с guest_query_id.
     ОБЯЗАТЕЛЬНО отвечаем через answerGuestQuery — иначе крестик.
-
-    Если бот есть в чате — также отправляем реплай send_message.
     """
     query_text = (message.text or "").strip()
 
@@ -545,36 +572,55 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
 
     answer = await _get_ai_answer(user_id, query_text)
 
-    # Всегда отвечаем через answerGuestQuery — убирает крестик
     await _answer_guest_query_with_result(message, bot, answer)
-
-    # Дополнительно: если бот в чате — отправляем реплай
-    placeholder = await _send_guest_reply(message, bot, answer)
 
     history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
     await reply_context_store.save_context(answer, history, user_id)
 
 
-async def _send_guest_reply(message: Message, bot: Bot, text: str) -> Message | None:
-    """Отправить сообщение-реплай. Если бот не в чате — возвращает None."""
-    try:
-        return await bot.send_message(
-            chat_id=message.chat.id,
-            text=text,
-            reply_to_message_id=message.message_id,
-        )
-    except TelegramBadRequest as e:
-        logger.error("GUEST send_message failed: %s", e)
+# --- Fallback: chosen_inline_result (когда Guest Mode не активен) ---
+
+@router.chosen_inline_result()
+async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> None:
+    """Fallback: редактируем сообщение через inline_message_id."""
+    inline_message_id = chosen.inline_message_id
+    user_id = chosen.from_user.id
+    query_text = chosen.query.strip()
+
+    if not inline_message_id or not query_text:
+        return
+
+    if user_storage.is_banned(user_id):
+        return
+
+    if not await rate_limiter.allow(user_id):
         try:
-            return await bot.send_message(
-                chat_id=message.chat.id,
-                text=text,
-                reply_to_message_id=message.message_id,
-                parse_mode=None,
+            await bot.edit_message_text(
+                "⏳ Слишком много запросов. Подождите.",
+                inline_message_id=inline_message_id,
             )
-        except Exception as e2:
-            logger.error("GUEST send_message plain failed: %s", e2)
-            return None
+        except Exception:
+            pass
+        return
+
+    await user_storage.touch(user_id, chosen.from_user.username, chosen.from_user.full_name)
+
+    try:
+        await bot.edit_message_text("⏳ Думаю...", inline_message_id=inline_message_id)
+    except Exception:
+        pass
+
+    answer = await _get_ai_answer(user_id, query_text)
+
+    html_answer = markdown_to_html(answer)
+    try:
+        await bot.edit_message_text(html_answer, inline_message_id=inline_message_id)
+    except TelegramBadRequest:
+        await bot.edit_message_text(
+            answer, inline_message_id=inline_message_id, parse_mode=None,
+        )
     except Exception as e:
-        logger.error("GUEST send_message failed: %s", e)
-        return None
+        logger.error("INLINE edit failed: %s", e)
+
+    history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
+    await reply_context_store.save_context(answer, history, user_id)
