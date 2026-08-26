@@ -107,6 +107,20 @@ async def reset_prompt(callback: CallbackQuery) -> None:
     logger.info("Администратор %s сбросил системный промт к дефолтному", callback.from_user.id)
 
 
+@router.callback_query(F.data == "admin_toggle_thinking")
+async def toggle_thinking(callback: CallbackQuery) -> None:
+    new_state = not user_settings.is_thinking_enabled()
+    await user_settings.set_thinking_enabled(new_state)
+    status = "ВКЛЮЧЕНА — пользователи могут выбирать 🧠 думающую модель" if new_state else "ВЫКЛЮЧЕНА — все отвечают быстро"
+    await callback.answer("✅ Изменено")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=admin_menu_kb())
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer(f"🧠 Думающая модель: {status}.")
+    logger.info("Админ %s изменил глобальную думающую модель: %s", callback.from_user.id, new_state)
+
+
 # ============================================================
 #  Модель DeepSeek
 # ============================================================

@@ -1,13 +1,20 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+from user_settings import user_settings
+
 
 def admin_menu_kb() -> InlineKeyboardMarkup:
+    thinking_label = (
+        "🧠 Думающая модель: ВКЛ ✅" if user_settings.is_thinking_enabled()
+        else "🧠 Думающая модель: ВЫКЛ ⛔"
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📄 Показать текущий промт", callback_data="admin_show_prompt")],
             [InlineKeyboardButton(text="✏️ Изменить промт", callback_data="admin_edit_prompt")],
             [InlineKeyboardButton(text="🔄 Сбросить промт", callback_data="admin_reset_prompt")],
             [InlineKeyboardButton(text="🤖 Сменить модель DeepSeek", callback_data="admin_change_model")],
+            [InlineKeyboardButton(text=thinking_label, callback_data="admin_toggle_thinking")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
             [InlineKeyboardButton(text="👥 Пользователи в базе", callback_data="admin_view_users")],
             [InlineKeyboardButton(text="✉️ Написать пользователю", callback_data="admin_direct_message")],
