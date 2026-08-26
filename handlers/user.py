@@ -449,9 +449,6 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 #  Инлайн-режим — typewriter-анимация
 # ============================================================
 
-INLINE_CHUNK_SIZE = 20
-INLINE_EDIT_DELAY = 0.1
-INLINE_INITIAL_DELAY = 0.3
 INLINE_DEEPSEEK_TIMEOUT = 90
 
 
@@ -550,46 +547,21 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
             logger.error("INLINE edit failed (error msg): %s", e2)
         return
 
-    html_answer = markdown_to_html(answer)
-    plain_answer = answer
-
-    displayed = ""
-    i = 0
-    while i < len(plain_answer):
-        chunk_end = min(i + INLINE_CHUNK_SIZE, len(plain_answer))
-        displayed = plain_answer[:chunk_end]
-        i = chunk_end
-
-        edit_text = markdown_to_html(displayed)
-        try:
-            await bot.edit_message_text(
-                edit_text, inline_message_id=inline_message_id,
-            )
-        except TelegramBadRequest as e:
-            if "message is not modified" not in str(e):
-                logger.error("INLINE typewriter edit error: %s", e)
-        except Exception as e:
-            logger.error("INLINE typewriter unexpected error: %s", e)
-            break
-
-        await asyncio.sleep(INLINE_EDIT_DELAY)
-
-    final_html = markdown_to_html(answer)
     try:
         await bot.edit_message_text(
-            final_html, inline_message_id=inline_message_id,
+            markdown_to_html(answer), inline_message_id=inline_message_id,
         )
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e):
-            logger.error("INLINE final edit as HTML failed (%s), trying plain text", e)
+            logger.error("INLINE edit as HTML failed (%s), trying plain text", e)
             try:
                 await bot.edit_message_text(
-                    plain_answer, inline_message_id=inline_message_id, parse_mode=None,
+                    answer, inline_message_id=inline_message_id, parse_mode=None,
                 )
             except Exception as e2:
-                logger.error("INLINE final edit plain text failed: %s", e2)
+                logger.error("INLINE edit plain text failed: %s", e2)
     except Exception as e:
-        logger.error("INLINE final edit failed: %s", e)
+        logger.error("INLINE edit failed: %s", e)
 
     history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
     await reply_context_store.save_context(answer, history, user_id)

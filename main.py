@@ -24,6 +24,8 @@ async def main() -> None:
         token=config.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    me = await bot.get_me()
+    logger.info("Бот: @%s (id=%d)", me.username, me.id)
     dp = Dispatcher()
 
     dp.include_router(admin.router)
