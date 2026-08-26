@@ -17,9 +17,9 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")  # стартов�
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 # --- База данных (SQLite) ---
-# Хранит все данные, чтобы они не стирались при деплое с GitHub.
-# Укажи путь к постоянной папке хостинга, например /data/bot.db
-DB_FILE_PATH = os.getenv("DB_FILE_PATH", "data/bot.db")
+# На Bothost постоянная папка — /app/data (не стирается при деплое/рестарте).
+# Локально можно переопределить через env DB_FILE_PATH, например data/bot.db
+DB_FILE_PATH = os.getenv("DB_FILE_PATH", "/app/data/bot.db")
 
 # Пауза между сообщениями при массовой рассылке (защита от лимитов Telegram)
 BROADCAST_DELAY_SECONDS = float(os.getenv("BROADCAST_DELAY_SECONDS", "0.05"))
