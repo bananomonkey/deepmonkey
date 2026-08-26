@@ -8,6 +8,7 @@ from aiogram.enums import ParseMode, UpdateType
 
 import config
 from handlers import admin, user
+from user_storage import user_storage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +37,8 @@ async def main() -> None:
 
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("Бот запущен. Allowed updates: %s", [u.value for u in allowed])
+    logger.info("База данных (SQLite): %s", config.DB_FILE_PATH)
+    logger.info("Пользователей в базе при старте: %d", user_storage.count())
     logger.info(
         "ВНИМАНИЕ: Для inline ОБЯЗАТЕЛЬНО включите inline feedback в @BotFather: "
         "/setinlinefeedback → Enable → 100%%"
