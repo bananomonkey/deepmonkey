@@ -36,7 +36,6 @@ async def main() -> None:
         UpdateType.CALLBACK_QUERY,
         UpdateType.INLINE_QUERY,
         UpdateType.CHOSEN_INLINE_RESULT,
-        UpdateType.GUEST_MESSAGE,
     ]
 
     await bot.delete_webhook(drop_pending_updates=True)
