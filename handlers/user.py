@@ -18,6 +18,7 @@ from aiogram.types import (
 import config
 from chat_sessions import chat_sessions
 from deepseek_client import ask_deepseek_with_search, summarize_profile
+from group_sessions import group_sessions
 from keyboards import (
     chats_list_kb,
     model_select_kb,
@@ -416,8 +417,7 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
     await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
-    await chat_sessions.ensure_user(user_id)
-    history = chat_sessions.get_history(user_id)
+    history = group_sessions.get_history(message.chat.id)
 
     profile = user_storage.get_profile(user_id)
     user_custom_prompt = user_settings.get_system_prompt(user_id)
@@ -441,8 +441,8 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
     except TelegramBadRequest:
         await message.reply(answer, parse_mode=None)
 
-    await chat_sessions.append_message(user_id, "user", question)
-    await chat_sessions.append_message(user_id, "assistant", answer)
+    await group_sessions.append_message(message.chat.id, "user", question)
+    await group_sessions.append_message(message.chat.id, "assistant", answer)
 
 
 # ============================================================
