@@ -8,6 +8,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
+    ChosenInlineResult,
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
@@ -534,6 +535,7 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
     query_text = (message.text or "").strip()
 
     if not query_text:
+        await _send_guest_reply(message, bot, "Напишите вопрос после @имя_бота, например:\n<code>@имя_бота что такое ИИ?</code>")
         return
 
     user_id = message.from_user.id if message.from_user else None
@@ -606,10 +608,84 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
 
 @router.inline_query()
 async def handle_inline(inline_query: InlineQuery) -> None:
-    """Guest Mode включён — inline-подсказки не показываем.
+    """Возвращаем результат, чтобы пользователь мог отправить '@bot запрос'.
 
-    Пользователь просто вводит «@bot запрос» и отправляет: Telegram пришлёт
-    guest_message, и бот ответит полноценным реплаем. Пустой ответ на
-    inline_query убирает кнопку «Спросить ИИ» из выпадающего списка.
+    Если вернуть пустой список, Telegram показывает крестик и блокирует
+    отправку. Один результат «Спросить ИИ» позволяет отправить запрос:
+    дальше работает либо guest_message (Guest Mode), либо chosen_inline_result
+    (fallback), в зависимости от того, что пришлёт Telegram.
     """
-    await inline_query.answer([], cache_time=1, is_personal=True)
+    query_text = inline_query.query.strip()
+
+    if not query_text:
+        await inline_query.answer([], cache_time=1, is_personal=True)
+        return
+
+    results = [
+        InlineQueryResultArticle(
+            id="ask",
+            title="Спросить ИИ",
+            description=query_text[:100],
+            input_message_content=InputTextMessageContent(message_text=f"❓ {query_text}"),
+        )
+    ]
+    await inline_query.answer(results, cache_time=1, is_personal=True)
+
+
+@router.chosen_inline_result()
+async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> None:
+    """Fallback, если Guest Mode не активен: отвечаем в том же сообщении."""
+    inline_message_id = chosen.inline_message_id
+    user_id = chosen.from_user.id
+    query_text = chosen.query.strip()
+
+    if not inline_message_id or not query_text:
+        return
+
+    if user_storage.is_banned(user_id):
+        return
+
+    if not await rate_limiter.allow(user_id):
+        try:
+            await bot.edit_message_text("⏳ Слишком много запросов. Подождите.", inline_message_id=inline_message_id)
+        except Exception:
+            pass
+        return
+
+    await user_storage.touch(user_id, chosen.from_user.username, chosen.from_user.full_name)
+
+    try:
+        await bot.edit_message_text("⏳ Думаю...", inline_message_id=inline_message_id)
+    except Exception:
+        pass
+
+    profile = user_storage.get_profile(user_id)
+    user_custom_prompt = user_settings.get_system_prompt(user_id)
+    system_prompt = build_full_system_prompt(profile, user_custom_prompt)
+
+    model_id = user_settings.get_model_id(user_id)
+    use_thinking = user_settings.use_thinking(user_id)
+
+    try:
+        answer = await asyncio.wait_for(
+            ask_deepseek_with_search(
+                system_prompt, query_text, model=model_id, use_thinking=use_thinking,
+            ),
+            timeout=INLINE_DEEPSEEK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        answer = "⚠️ Превышен таймаут ответа. Попробуйте более короткий вопрос."
+    except Exception as e:
+        logger.error("INLINE ошибка DeepSeek: %s", e)
+        answer = "⚠️ Ошибка при обращении к нейросети."
+
+    html_answer = markdown_to_html(answer)
+    try:
+        await bot.edit_message_text(html_answer, inline_message_id=inline_message_id)
+    except TelegramBadRequest:
+        await bot.edit_message_text(answer, inline_message_id=inline_message_id, parse_mode=None)
+    except Exception as e:
+        logger.error("INLINE edit failed: %s", e)
+
+    history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
+    await reply_context_store.save_context(answer, history, user_id)
