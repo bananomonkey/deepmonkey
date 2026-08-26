@@ -91,3 +91,26 @@ def get_value(table: str, key: str):
             return row[0]
     finally:
         conn.close()
+
+
+def diagnose() -> str:
+    """Человекочитаемая сводка о состоянии БД — для стартовых логов."""
+    d = os.path.dirname(_db_path) or "."
+    exists = os.path.exists(_db_path)
+    size = os.path.getsize(_db_path) if exists else 0
+    dir_ok = os.path.isdir(d) and os.access(d, os.W_OK)
+    file_ok = os.access(_db_path, os.W_OK) if exists else None
+    return (
+        f"path={_db_path} | exists={exists} | size={size}b | "
+        f"dir_writable={dir_ok} | file_writable={file_ok}"
+    )
+
+
+def self_test() -> str:
+    """Пишет и читает тестовую запись — проверяет, что БД реально персистится."""
+    try:
+        upsert("_selftest", "key", "value")
+        ok = get_value("_selftest", "key") == "value"
+        return "persistence self-test: OK" if ok else "persistence self-test: FAILED"
+    except Exception as e:
+        return f"persistence self-test: ERROR {e}"
