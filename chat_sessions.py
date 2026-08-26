@@ -57,7 +57,7 @@ class ChatSessionStore:
                     rec["active"] = next(iter(rec["chats"].keys()))
                 changed = True
                 logger.info("Миграция: пользователь %s получил чаты до минимума (%d)", uid, config.MIN_CHATS_PER_USER)
-            if self._renumber_chats(rec):
+            if self._dedupe_chat_names(rec):
                 changed = True
         if changed:
             try:
@@ -66,19 +66,35 @@ class ChatSessionStore:
                 logger.error("Не удалось сохранить миграцию чатов в БД: %s", e)
 
     @staticmethod
-    def _renumber_chats(rec: dict) -> bool:
-        """Перенумеровывает чаты последовательно (Чат 1, Чат 2, ...) по времени создания.
-        Чинит дубли вида «Чат 4, Чат 4», оставшиеся от старого кода (len(chats)+1)."""
+    def _chat_number(name: str) -> int:
+        """Извлекает номер из названия «Чат N». Для нестандартных имён — большое число (в конец списка)."""
+        if name.startswith("Чат "):
+            try:
+                return int(name[4:])
+            except ValueError:
+                pass
+        return 10**9
+
+    @staticmethod
+    def _dedupe_chat_names(rec: dict) -> bool:
+        """Чинит только ДУБЛИ названий («Чат 4, Чат 4»), не трогая уникальные.
+        Первый по порядку чат с номером сохраняет своё имя, дубли получают первый свободный номер."""
         chats = rec.get("chats", {})
         if not chats:
             return False
-        ordered = sorted(chats.items(), key=lambda kv: kv[1].get("created", ""))
+        used = set()
         changed = False
-        for i, (cid, c) in enumerate(ordered, start=1):
-            expected = f"Чат {i}"
-            if c.get("name") != expected:
-                c["name"] = expected
+        for cid, c in chats.items():
+            n = ChatSessionStore._chat_number(c.get("name", ""))
+            if n >= 10**9 or n in used:
+                free = 1
+                while free in used:
+                    free += 1
+                c["name"] = f"Чат {free}"
+                used.add(free)
                 changed = True
+            else:
+                used.add(n)
         return changed
 
     @staticmethod
@@ -117,10 +133,31 @@ class ChatSessionStore:
         if not rec:
             return []
         active = rec["active"]
-        return [
-            {"id": cid, "name": c["name"], "active": cid == active}
+        chats = [
+            {
+                "id": cid,
+                "name": c["name"],
+                "active": cid == active,
+                "preview": self._preview(c),
+            }
             for cid, c in rec["chats"].items()
         ]
+        chats.sort(key=lambda x: self._chat_number(x["name"]))
+        return chats
+
+    @staticmethod
+    def _preview(chat: dict) -> str:
+        """Короткий сниппет последнего сообщения пользователя — чтобы отличать чаты друг от друга."""
+        history = chat.get("history", [])
+        last_user = ""
+        for m in reversed(history):
+            if m.get("role") == "user":
+                last_user = m.get("content", "")
+                break
+        if not last_user:
+            return ""
+        last_user = " ".join(last_user.split())
+        return last_user[:30] + ("…" if len(last_user) > 30 else "")
 
     def get_history(self, user_id: int) -> List[dict]:
         rec = self._data.get(user_id)
@@ -190,7 +227,6 @@ class ChatSessionStore:
             del rec["chats"][chat_id]
             if rec["active"] == chat_id:
                 rec["active"] = next(iter(rec["chats"].keys()))
-            self._renumber_chats(rec)
             await self._save_to_db()
             return True
 

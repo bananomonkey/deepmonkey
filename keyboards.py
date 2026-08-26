@@ -39,6 +39,8 @@ def chats_list_kb(chats: list) -> InlineKeyboardMarkup:
     rows = []
     for chat in chats:
         label = ("✅ " if chat["active"] else "") + chat["name"]
+        if chat.get("preview"):
+            label += "\n" + chat["preview"]
         rows.append(
             [
                 InlineKeyboardButton(text=label, callback_data=f"chat_switch:{chat['id']}"),

@@ -134,7 +134,7 @@ async def cb_chat_delete(callback: CallbackQuery) -> None:
     chat_id = callback.data.split(":", 1)[1]
     ok = await chat_sessions.delete_chat(callback.from_user.id, chat_id)
     if not ok:
-        await callback.answer("⚠️ Нужно оставить минимум 2 чата.", show_alert=True)
+        await callback.answer("⚠️ Нельзя удалить последний чат.", show_alert=True)
         return
     await callback.answer("Удалено")
     chats = chat_sessions.list_chats(callback.from_user.id)
