@@ -1,41 +1,38 @@
 import asyncio
 import logging
-import os
 
 import config
+import database
 
 logger = logging.getLogger(__name__)
+
+TABLE = "settings"
+KEY = "prompt"
 
 
 class PromptManager:
     """
     Управляет системным промтом:
     - хранит его в памяти для быстрого доступа;
-    - persist'ит на диск в текстовый файл, чтобы промт не терялся при рестарте
-      (актуально для Bothost, где нет SSH и БД может быть не подключена).
+    - persist'ит в SQLite, чтобы промт не терялся при деплое.
     """
 
-    def __init__(self, file_path: str, default_prompt: str):
-        self.file_path = file_path
+    def __init__(self, default_prompt: str):
         self.default_prompt = default_prompt
         self._current_prompt = default_prompt
         self._lock = asyncio.Lock()
-        self._load_from_disk()
+        self._load_from_db()
 
-    def _load_from_disk(self) -> None:
-        if os.path.exists(self.file_path):
-            try:
-                with open(self.file_path, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                if content:
-                    self._current_prompt = content
-                    logger.info("Системный промт загружен из файла: %s", self.file_path)
-                else:
-                    logger.warning("Файл промта пуст, используется промт по умолчанию.")
-            except Exception as e:
-                logger.error("Не удалось прочитать файл промта (%s): %s", self.file_path, e)
-        else:
-            logger.info("Файл промта не найден, используется промт по умолчанию.")
+    def _load_from_db(self) -> None:
+        try:
+            value = database.get_value(TABLE, KEY)
+            if value:
+                self._current_prompt = value
+                logger.info("Системный промт загружен из БД")
+            else:
+                logger.info("Промт в БД не найден, используется промт по умолчанию.")
+        except Exception as e:
+            logger.error("Не удалось прочитать промт из БД: %s", e)
 
     def get(self) -> str:
         """Синхронное чтение текущего промта (безопасно, т.к. запись атомарна на уровне Python)."""
@@ -44,28 +41,22 @@ class PromptManager:
     async def set(self, new_prompt: str) -> None:
         async with self._lock:
             self._current_prompt = new_prompt
-            await self._save_to_disk(new_prompt)
+            await self._save_to_db(new_prompt)
 
     async def reset(self) -> None:
         await self.set(self.default_prompt)
 
-    async def _save_to_disk(self, text: str) -> None:
+    async def _save_to_db(self, text: str) -> None:
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._write_file, text)
-            logger.info("Системный промт сохранён в файл: %s", self.file_path)
+            await loop.run_in_executor(None, database.upsert, TABLE, KEY, text)
+            logger.info("Системный промт сохранён в БД")
         except Exception as e:
-            # Не роняем бота, если запись на диск не удалась (например, read-only fs) —
-            # просто логируем, промт всё равно останется актуальным в памяти до рестарта.
-            logger.error("Не удалось сохранить файл промта (%s): %s", self.file_path, e)
-
-    def _write_file(self, text: str) -> None:
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            f.write(text)
+            logger.error("Не удалось сохранить промт в БД: %s", e)
 
 
 # Единый инстанс на всё приложение
-prompt_manager = PromptManager(config.PROMPT_FILE_PATH, config.DEFAULT_SYSTEM_PROMPT)
+prompt_manager = PromptManager(config.DEFAULT_SYSTEM_PROMPT)
 
 
 def build_full_system_prompt(profile: str = "", user_custom_prompt: str = "") -> str:

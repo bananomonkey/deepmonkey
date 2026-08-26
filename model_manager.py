@@ -1,34 +1,34 @@
 import asyncio
 import logging
-import os
 
 import config
+import database
 
 logger = logging.getLogger(__name__)
 
+TABLE = "settings"
+KEY = "model"
+
 
 class ModelManager:
-    """Хранит текущее имя модели DeepSeek, персистит в файл — аналог PromptManager."""
+    """Хранит текущее имя модели DeepSeek, персистит в SQLite."""
 
-    def __init__(self, file_path: str, default_model: str):
-        self.file_path = file_path
+    def __init__(self, default_model: str):
         self.default_model = default_model
         self._current_model = default_model
         self._lock = asyncio.Lock()
-        self._load_from_disk()
+        self._load_from_db()
 
-    def _load_from_disk(self) -> None:
-        if os.path.exists(self.file_path):
-            try:
-                with open(self.file_path, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                if content:
-                    self._current_model = content
-                    logger.info("Модель DeepSeek загружена из файла: %s", content)
-            except Exception as e:
-                logger.error("Не удалось прочитать файл модели (%s): %s", self.file_path, e)
-        else:
-            logger.info("Файл модели не найден, используется модель по умолчанию: %s", self.default_model)
+    def _load_from_db(self) -> None:
+        try:
+            value = database.get_value(TABLE, KEY)
+            if value:
+                self._current_model = value
+                logger.info("Модель DeepSeek загружена из БД: %s", value)
+            else:
+                logger.info("Модель в БД не найдена, используется по умолчанию: %s", self.default_model)
+        except Exception as e:
+            logger.error("Не удалось прочитать модель из БД: %s", e)
 
     def get(self) -> str:
         return self._current_model
@@ -36,21 +36,17 @@ class ModelManager:
     async def set(self, new_model: str) -> None:
         async with self._lock:
             self._current_model = new_model
-            await self._save_to_disk(new_model)
+            await self._save_to_db(new_model)
 
     async def reset(self) -> None:
         await self.set(self.default_model)
 
-    async def _save_to_disk(self, text: str) -> None:
+    async def _save_to_db(self, text: str) -> None:
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._write_file, text)
+            await loop.run_in_executor(None, database.upsert, TABLE, KEY, text)
         except Exception as e:
-            logger.error("Не удалось сохранить файл модели (%s): %s", self.file_path, e)
-
-    def _write_file(self, text: str) -> None:
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            f.write(text)
+            logger.error("Не удалось сохранить модель в БД: %s", e)
 
 
-model_manager = ModelManager(config.MODEL_FILE_PATH, config.DEEPSEEK_MODEL)
+model_manager = ModelManager(config.DEEPSEEK_MODEL)

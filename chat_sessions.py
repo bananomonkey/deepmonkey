@@ -1,14 +1,15 @@
 import asyncio
-import json
 import logging
-import os
 import time
 import uuid
 from typing import Dict, List, Optional
 
 import config
+import database
 
 logger = logging.getLogger(__name__)
+
+TABLE = "chats"
 
 DEFAULT_CHAT_NAME = "Чат 1"
 
@@ -22,28 +23,24 @@ class ChatSessionStore:
     Несколько независимых диалогов (чатов) на одного пользователя в личке —
     как отдельные вкладки в ChatGPT. Каждый чат — своя история сообщений
     для DeepSeek, полностью изолированная от остальных чатов пользователя.
+    Хранится в SQLite — переживает деплой.
     """
 
-    def __init__(self, file_path: str, max_chats_per_user: int, max_history_turns: int):
-        self.file_path = file_path
+    def __init__(self, max_chats_per_user: int, max_history_turns: int):
         self.max_chats_per_user = max_chats_per_user
         self.max_history_turns = max_history_turns
         self._lock = asyncio.Lock()
         self._data: Dict[int, dict] = {}
-        self._load_from_disk()
+        self._load_from_db()
 
-    def _load_from_disk(self) -> None:
-        if not os.path.exists(self.file_path):
-            logger.info("Файл сессий чатов не найден, начинаем с пустого хранилища.")
-            return
+    def _load_from_db(self) -> None:
         try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
+            raw = database.load_table(TABLE)
             self._data = {int(uid): rec for uid, rec in raw.items()}
-            logger.info("Загружены чаты для %d пользователей из %s", len(self._data), self.file_path)
+            logger.info("Загружены чаты для %d пользователей из БД", len(self._data))
             self._migrate()
         except Exception as e:
-            logger.error("Не удалось прочитать файл сессий чатов (%s): %s", self.file_path, e)
+            logger.error("Не удалось прочитать чаты из БД: %s", e)
 
     def _migrate(self) -> None:
         changed = False
@@ -52,7 +49,7 @@ class ChatSessionStore:
                 while len(rec.get("chats", {})) < config.MIN_CHATS_PER_USER:
                     chat_id = self._new_chat_id()
                     rec.setdefault("chats", {})[chat_id] = {
-                        "name": f"Чат {len(rec['chats'])}",
+                        "name": f"Чат {self._next_chat_number(rec)}",
                         "created": _now_iso(),
                         "history": [],
                     }
@@ -61,16 +58,29 @@ class ChatSessionStore:
                 changed = True
                 logger.info("Миграция: пользователь %s получил чаты до минимума (%d)", uid, config.MIN_CHATS_PER_USER)
         if changed:
-            import asyncio
             try:
-                loop = asyncio.get_running_loop()
-                loop.call_soon(lambda: asyncio.ensure_future(self._save_to_disk()))
-            except RuntimeError:
-                pass
+                database.save_table(TABLE, {str(uid): rec for uid, rec in self._data.items()})
+            except Exception as e:
+                logger.error("Не удалось сохранить миграцию чатов в БД: %s", e)
 
     @staticmethod
     def _new_chat_id() -> str:
         return uuid.uuid4().hex[:12]
+
+    @staticmethod
+    def _next_chat_number(rec: dict) -> int:
+        used = set()
+        for c in rec.get("chats", {}).values():
+            name = c.get("name", "")
+            if name.startswith("Чат "):
+                try:
+                    used.add(int(name[4:]))
+                except ValueError:
+                    pass
+        n = 1
+        while n in used:
+            n += 1
+        return n
 
     def _ensure_user(self, user_id: int) -> dict:
         """Вызывать ТОЛЬКО внутри self._lock — мутирует состояние."""
@@ -83,8 +93,6 @@ class ChatSessionStore:
             }
             self._data[user_id] = rec
         return rec
-
-    # --- Чтение (без мутации, безопасно без лока) ---
 
     def list_chats(self, user_id: int) -> List[dict]:
         rec = self._data.get(user_id)
@@ -114,12 +122,10 @@ class ChatSessionStore:
         rec = self._data.get(user_id)
         return len(rec["chats"]) if rec else 0
 
-    # --- Изменение (под локом + persist) ---
-
     async def ensure_user(self, user_id: int) -> None:
         async with self._lock:
             self._ensure_user(user_id)
-            await self._save_to_disk()
+            await self._save_to_db()
 
     async def append_message(self, user_id: int, role: str, content: str) -> None:
         async with self._lock:
@@ -129,7 +135,7 @@ class ChatSessionStore:
             max_messages = self.max_history_turns * 2
             if len(chat["history"]) > max_messages:
                 chat["history"] = chat["history"][-max_messages:]
-            await self._save_to_disk()
+            await self._save_to_db()
 
     async def create_chat(self, user_id: int, name: Optional[str] = None) -> Optional[str]:
         async with self._lock:
@@ -137,14 +143,14 @@ class ChatSessionStore:
             if len(rec["chats"]) >= self.max_chats_per_user:
                 return None
             chat_id = self._new_chat_id()
-            chat_number = len(rec["chats"]) + 1
+            chat_number = self._next_chat_number(rec)
             rec["chats"][chat_id] = {
                 "name": name or f"Чат {chat_number}",
                 "created": _now_iso(),
                 "history": [],
             }
             rec["active"] = chat_id
-            await self._save_to_disk()
+            await self._save_to_db()
             return chat_id
 
     async def switch_chat(self, user_id: int, chat_id: str) -> bool:
@@ -153,7 +159,7 @@ class ChatSessionStore:
             if chat_id not in rec["chats"]:
                 return False
             rec["active"] = chat_id
-            await self._save_to_disk()
+            await self._save_to_db()
             return True
 
     async def delete_chat(self, user_id: int, chat_id: str) -> bool:
@@ -166,25 +172,24 @@ class ChatSessionStore:
             del rec["chats"][chat_id]
             if rec["active"] == chat_id:
                 rec["active"] = next(iter(rec["chats"].keys()))
-            await self._save_to_disk()
+            await self._save_to_db()
             return True
 
     async def clear_active_chat(self, user_id: int) -> None:
         async with self._lock:
             rec = self._ensure_user(user_id)
             rec["chats"][rec["active"]]["history"] = []
-            await self._save_to_disk()
+            await self._save_to_db()
 
-    async def _save_to_disk(self) -> None:
+    async def _save_to_db(self) -> None:
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._write_file)
+            await loop.run_in_executor(None, self._write_db)
         except Exception as e:
-            logger.error("Не удалось сохранить файл сессий чатов (%s): %s", self.file_path, e)
+            logger.error("Не удалось сохранить чаты в БД: %s", e)
 
-    def _write_file(self) -> None:
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump({str(uid): rec for uid, rec in self._data.items()}, f, ensure_ascii=False)
+    def _write_db(self) -> None:
+        database.save_table(TABLE, {str(uid): rec for uid, rec in self._data.items()})
 
 
-chat_sessions = ChatSessionStore(config.CHATS_FILE_PATH, config.MAX_CHATS_PER_USER, config.HISTORY_MAX_TURNS)
+chat_sessions = ChatSessionStore(config.MAX_CHATS_PER_USER, config.HISTORY_MAX_TURNS)

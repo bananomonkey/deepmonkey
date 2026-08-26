@@ -16,11 +16,10 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")  # стартов�
 # Tavily — основной поисковик для ИИ (RAG). Бесплатно 1000 запросов/мес.
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
-PROMPT_FILE_PATH = os.getenv("PROMPT_FILE_PATH", "system_prompt.txt")
-MODEL_FILE_PATH = os.getenv("MODEL_FILE_PATH", "current_model.txt")
-USERS_FILE_PATH = os.getenv("USERS_FILE_PATH", "users.json")
-CHATS_FILE_PATH = os.getenv("CHATS_FILE_PATH", "chats.json")
-REPLY_CONTEXT_FILE_PATH = os.getenv("REPLY_CONTEXT_FILE_PATH", "reply_context.json")
+# --- База данных (SQLite) ---
+# Хранит все данные, чтобы они не стирались при деплое с GitHub.
+# Укажи путь к постоянной папке хостинга, например /data/bot.db
+DB_FILE_PATH = os.getenv("DB_FILE_PATH", "data/bot.db")
 
 # Пауза между сообщениями при массовой рассылке (защита от лимитов Telegram)
 BROADCAST_DELAY_SECONDS = float(os.getenv("BROADCAST_DELAY_SECONDS", "0.05"))

@@ -1,10 +1,12 @@
 import asyncio
-import json
 import logging
-import os
 from typing import Dict
 
+import database
+
 logger = logging.getLogger(__name__)
+
+TABLE = "user_settings"
 
 DEFAULT_MODEL = "fast"
 
@@ -20,22 +22,20 @@ THINKING_PARAM_MAP = {
 
 
 class UserSettings:
-    def __init__(self, file_path: str):
-        self.file_path = file_path
+    """Per-user настройки (модель, системный промпт). Хранятся в SQLite."""
+
+    def __init__(self):
         self._lock = asyncio.Lock()
         self._data: Dict[int, dict] = {}
-        self._load_from_disk()
+        self._load_from_db()
 
-    def _load_from_disk(self) -> None:
-        if not os.path.exists(self.file_path):
-            return
+    def _load_from_db(self) -> None:
         try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
+            raw = database.load_table(TABLE)
             self._data = {int(uid): rec for uid, rec in raw.items()}
-            logger.info("Загружены настройки для %d пользователей из %s", len(self._data), self.file_path)
+            logger.info("Загружены настройки для %d пользователей из БД", len(self._data))
         except Exception as e:
-            logger.error("Не удалось прочитать файл настроек (%s): %s", self.file_path, e)
+            logger.error("Не удалось прочитать настройки из БД: %s", e)
 
     def _ensure_user(self, user_id: int) -> dict:
         if user_id not in self._data:
@@ -60,27 +60,23 @@ class UserSettings:
         async with self._lock:
             rec = self._ensure_user(user_id)
             rec["model"] = model_key
-            await self._save_to_disk()
+            await self._save_to_db()
 
     async def set_system_prompt(self, user_id: int, prompt: str) -> None:
         async with self._lock:
             rec = self._ensure_user(user_id)
             rec["system_prompt"] = prompt
-            await self._save_to_disk()
+            await self._save_to_db()
 
-    def get_all_user_ids(self):
-        return list(self._data.keys())
-
-    async def _save_to_disk(self) -> None:
+    async def _save_to_db(self) -> None:
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._write_file)
+            await loop.run_in_executor(None, self._write_db)
         except Exception as e:
-            logger.error("Не удалось сохранить файл настроек (%s): %s", self.file_path, e)
+            logger.error("Не удалось сохранить настройки в БД: %s", e)
 
-    def _write_file(self) -> None:
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump({str(uid): rec for uid, rec in self._data.items()}, f, ensure_ascii=False)
+    def _write_db(self) -> None:
+        database.save_table(TABLE, {str(uid): rec for uid, rec in self._data.items()})
 
 
-user_settings = UserSettings(os.getenv("USER_SETTINGS_FILE_PATH", "user_settings.json"))
+user_settings = UserSettings()

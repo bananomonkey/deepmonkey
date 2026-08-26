@@ -1,14 +1,14 @@
 import asyncio
 import hashlib
-import json
 import logging
-import os
 import time
 from typing import Dict, List, Optional
 
-import config
+import database
 
 logger = logging.getLogger(__name__)
+
+TABLE = "reply_context"
 
 
 def _hash_text(text: str) -> str:
@@ -17,39 +17,21 @@ def _hash_text(text: str) -> str:
 
 
 class ReplyContextStore:
-    """
-    Позволяет ИИ "помнить" ветку переписки там, где нет единого постоянного
-    чата с пользователем (инлайн-режим, группы): когда кто-то отвечает
-    (reply) на предыдущее сообщение бота, мы находим контекст этого
-    сообщения и продолжаем диалог с учётом истории.
+    """Контекст инлайн/групповых ответов. Хранится в SQLite."""
 
-    Технически Telegram не даёт нам заранее знать chat_id/message_id
-    инлайн-сообщения (в chosen_inline_result есть только inline_message_id,
-    непригодный для сопоставления с последующим reply_to_message) — поэтому
-    контекст ищется по хэшу ТЕКСТА последнего ответа ИИ. Это простое и
-    рабочее решение, но не абсолютно надёжное: если два разных ответа ИИ
-    окажутся текстуально идентичны, их контексты могут перепутаться —
-    на практике вероятность этого крайне мала (ответы ИИ почти всегда
-    уникальны по формулировке).
-    """
-
-    def __init__(self, file_path: str, max_entries: int = 5000, ttl_seconds: int = 60 * 60 * 24 * 3):
-        self.file_path = file_path
+    def __init__(self, max_entries: int = 5000, ttl_seconds: int = 60 * 60 * 24 * 3):
         self.max_entries = max_entries
         self.ttl_seconds = ttl_seconds
         self._lock = asyncio.Lock()
         self._store: Dict[str, dict] = {}
-        self._load_from_disk()
+        self._load_from_db()
 
-    def _load_from_disk(self) -> None:
-        if not os.path.exists(self.file_path):
-            return
+    def _load_from_db(self) -> None:
         try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                self._store = json.load(f)
-            logger.info("Загружено %d записей контекста ответов из %s", len(self._store), self.file_path)
+            self._store = database.load_table(TABLE)
+            logger.info("Загружено %d записей контекста ответов из БД", len(self._store))
         except Exception as e:
-            logger.error("Не удалось прочитать файл контекста ответов (%s): %s", self.file_path, e)
+            logger.error("Не удалось прочитать контекст ответов из БД: %s", e)
 
     def get_context(self, assistant_text: str) -> Optional[dict]:
         key = _hash_text(assistant_text)
@@ -68,18 +50,17 @@ class ReplyContextStore:
                 oldest = sorted(self._store.items(), key=lambda kv: kv[1].get("ts", 0))
                 for old_key, _ in oldest[: len(self._store) - self.max_entries]:
                     del self._store[old_key]
-            await self._save_to_disk()
+            await self._save_to_db()
 
-    async def _save_to_disk(self) -> None:
+    async def _save_to_db(self) -> None:
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._write_file)
+            await loop.run_in_executor(None, self._write_db)
         except Exception as e:
-            logger.error("Не удалось сохранить файл контекста ответов (%s): %s", self.file_path, e)
+            logger.error("Не удалось сохранить контекст ответов в БД: %s", e)
 
-    def _write_file(self) -> None:
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump(self._store, f, ensure_ascii=False)
+    def _write_db(self) -> None:
+        database.save_table(TABLE, self._store)
 
 
-reply_context_store = ReplyContextStore(config.REPLY_CONTEXT_FILE_PATH)
+reply_context_store = ReplyContextStore()

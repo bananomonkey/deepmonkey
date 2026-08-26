@@ -1,13 +1,13 @@
 import asyncio
-import json
 import logging
-import os
 import time
 from typing import Dict, Optional, Set
 
-import config
+import database
 
 logger = logging.getLogger(__name__)
+
+TABLE = "users"
 
 
 def _now_iso() -> str:
@@ -18,31 +18,21 @@ class UserStorage:
     """
     База пользователей: кто писал боту, короткая заметка ИИ о его интересах
     (профиль для персонализации), бан-статус, счётчик сообщений.
-    Хранится в JSON-файле (без внешней БД), как и остальные данные бота —
-    переживает рестарт на Bothost.
+    Хранится в SQLite (database.py) — переживает рестарт и деплой.
     """
 
-    def __init__(self, file_path: str):
-        self.file_path = file_path
+    def __init__(self):
         self._lock = asyncio.Lock()
         self._users: Dict[int, dict] = {}
-        self._load_from_disk()
+        self._load_from_db()
 
-    def _load_from_disk(self) -> None:
-        if not os.path.exists(self.file_path):
-            logger.info("Файл базы пользователей не найден, начинаем с пустой базы.")
-            return
+    def _load_from_db(self) -> None:
         try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict) and "users" in data:
-                self._users = {int(uid): rec for uid, rec in data["users"].items()}
-            elif isinstance(data, dict) and "user_ids" in data:
-                # обратная совместимость со старым форматом {"user_ids": [...]}
-                self._users = {int(uid): self._blank_record() for uid in data["user_ids"]}
-            logger.info("Загружено %d пользователей из %s", len(self._users), self.file_path)
+            raw = database.load_table(TABLE)
+            self._users = {int(uid): rec for uid, rec in raw.items()}
+            logger.info("Загружено %d пользователей из БД", len(self._users))
         except Exception as e:
-            logger.error("Не удалось прочитать файл базы пользователей (%s): %s", self.file_path, e)
+            logger.error("Не удалось прочитать пользователей из БД: %s", e)
 
     @staticmethod
     def _blank_record(username: Optional[str] = None, full_name: Optional[str] = None) -> dict:
@@ -55,8 +45,6 @@ class UserStorage:
             "first_seen": _now_iso(),
             "last_seen": _now_iso(),
         }
-
-    # --- Чтение (без блокировки — атомарно на уровне GIL для простых операций) ---
 
     def get_all(self) -> Set[int]:
         return set(self._users.keys())
@@ -79,8 +67,6 @@ class UserStorage:
         rec = self._users.get(user_id)
         return rec.get("profile", "") if rec else ""
 
-    # --- Изменение (под локом + persist на диск) ---
-
     async def touch(self, user_id: int, username: Optional[str] = None, full_name: Optional[str] = None) -> None:
         """Регистрирует пользователя (если новый), обновляет счётчик сообщений и last_seen."""
         async with self._lock:
@@ -94,13 +80,13 @@ class UserStorage:
                 rec["full_name"] = full_name
             rec["message_count"] = rec.get("message_count", 0) + 1
             rec["last_seen"] = _now_iso()
-            await self._save_to_disk()
+            await self._save_to_db()
 
     async def set_profile(self, user_id: int, profile_text: str) -> None:
         async with self._lock:
             rec = self._users.setdefault(user_id, self._blank_record())
             rec["profile"] = profile_text
-            await self._save_to_disk()
+            await self._save_to_db()
 
     async def ban(self, user_id: int) -> bool:
         """True, если пользователь найден в базе и забанен."""
@@ -109,7 +95,7 @@ class UserStorage:
             if rec is None:
                 return False
             rec["banned"] = True
-            await self._save_to_disk()
+            await self._save_to_db()
             return True
 
     async def unban(self, user_id: int) -> bool:
@@ -118,25 +104,24 @@ class UserStorage:
             if rec is None:
                 return False
             rec["banned"] = False
-            await self._save_to_disk()
+            await self._save_to_db()
             return True
 
     async def remove(self, user_id: int) -> None:
         async with self._lock:
             if user_id in self._users:
                 del self._users[user_id]
-                await self._save_to_disk()
+                await self._save_to_db()
 
-    async def _save_to_disk(self) -> None:
+    async def _save_to_db(self) -> None:
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._write_file)
+            await loop.run_in_executor(None, self._write_db)
         except Exception as e:
-            logger.error("Не удалось сохранить файл базы пользователей (%s): %s", self.file_path, e)
+            logger.error("Не удалось сохранить пользователей в БД: %s", e)
 
-    def _write_file(self) -> None:
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump({"users": {str(uid): rec for uid, rec in self._users.items()}}, f, ensure_ascii=False)
+    def _write_db(self) -> None:
+        database.save_table(TABLE, {str(uid): rec for uid, rec in self._users.items()})
 
 
-user_storage = UserStorage(config.USERS_FILE_PATH)
+user_storage = UserStorage()

@@ -1,12 +1,20 @@
 # Секреты — никогда не коммитим
 .env
 
-# Runtime-файлы, которые бот создаёт сам во время работы
+# База данных SQLite (не коммитим — это рантайм-данные)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Runtime-файлы, которые бот создаёт сам во время работы (легаси, до перехода на SQLite)
 system_prompt.txt
 current_model.txt
 users.json
 chats.json
 reply_context.json
+user_settings.json
 
 # Python
 __pycache__/
