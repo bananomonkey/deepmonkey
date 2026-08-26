@@ -58,10 +58,6 @@ def chats_list_kb(chats: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def inline_placeholder_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏳", callback_data="noop")]])
-
-
 def model_select_kb(current_model: str) -> InlineKeyboardMarkup:
     fast_label = "⚡ Быстрая" + (" ✅" if current_model == "fast" else "")
     think_label = "🧠 Думающая" + (" ✅" if current_model == "thinking" else "")
