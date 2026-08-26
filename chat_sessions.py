@@ -57,11 +57,29 @@ class ChatSessionStore:
                     rec["active"] = next(iter(rec["chats"].keys()))
                 changed = True
                 logger.info("Миграция: пользователь %s получил чаты до минимума (%d)", uid, config.MIN_CHATS_PER_USER)
+            if self._renumber_chats(rec):
+                changed = True
         if changed:
             try:
                 database.save_table(TABLE, {str(uid): rec for uid, rec in self._data.items()})
             except Exception as e:
                 logger.error("Не удалось сохранить миграцию чатов в БД: %s", e)
+
+    @staticmethod
+    def _renumber_chats(rec: dict) -> bool:
+        """Перенумеровывает чаты последовательно (Чат 1, Чат 2, ...) по времени создания.
+        Чинит дубли вида «Чат 4, Чат 4», оставшиеся от старого кода (len(chats)+1)."""
+        chats = rec.get("chats", {})
+        if not chats:
+            return False
+        ordered = sorted(chats.items(), key=lambda kv: kv[1].get("created", ""))
+        changed = False
+        for i, (cid, c) in enumerate(ordered, start=1):
+            expected = f"Чат {i}"
+            if c.get("name") != expected:
+                c["name"] = expected
+                changed = True
+        return changed
 
     @staticmethod
     def _new_chat_id() -> str:
@@ -172,6 +190,7 @@ class ChatSessionStore:
             del rec["chats"][chat_id]
             if rec["active"] == chat_id:
                 rec["active"] = next(iter(rec["chats"].keys()))
+            self._renumber_chats(rec)
             await self._save_to_db()
             return True
 
