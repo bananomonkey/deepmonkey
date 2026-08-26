@@ -2,14 +2,13 @@ import asyncio
 import logging
 
 from aiogram import Router, F, Bot
-from aiogram.enums import ChatAction, MessageEntityType
+from aiogram.enums import ChatAction, MessageEntityType, ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     ChosenInlineResult,
-    InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
     Message,
@@ -446,39 +445,164 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 
 
 # ============================================================
-#  Инлайн-режим (@bot запрос → edit сообщения)
+#  Инлайн-режим — Guest Mode (@bot запрос) и chosen_inline_result
 # ============================================================
 
 INLINE_DEEPSEEK_TIMEOUT = 90
 
 
-@router.inline_query()
-async def handle_inline(inline_query: InlineQuery) -> None:
-    """Возвращаем результат, чтобы пользователь мог отправить '@bot запрос'.
+async def _get_ai_answer(user_id: int, query_text: str) -> str:
+    """Получить ответ ИИ для inline/guest запроса."""
+    profile = user_storage.get_profile(user_id)
+    user_custom_prompt = user_settings.get_system_prompt(user_id)
+    system_prompt = build_full_system_prompt(profile, user_custom_prompt)
 
-    При выборе результата Telegram создаёт сообщение с message_text,
-    а chosen_inline_result редактирует его на ответ ИИ.
+    model_id = user_settings.get_model_id(user_id)
+    use_thinking = user_settings.use_thinking(user_id)
+
+    try:
+        return await asyncio.wait_for(
+            ask_deepseek_with_search(
+                system_prompt, query_text, model=model_id, use_thinking=use_thinking,
+            ),
+            timeout=INLINE_DEEPSEEK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return "⚠️ Превышен таймаут ответа. Попробуйте более короткий вопрос."
+    except Exception as e:
+        logger.error("INLINE ошибка DeepSeek: %s", e)
+        return "⚠️ Ошибка при обращении к нейросети."
+
+
+# --- Guest Mode: основной путь для @bot запросов ---
+
+async def _send_guest_reply(message: Message, bot: Bot, text: str) -> Message | None:
+    """Отправить сообщение-реплай. Если бот не в чате — возвращает None."""
+    try:
+        return await bot.send_message(
+            chat_id=message.chat.id,
+            text=text,
+            reply_to_message_id=message.message_id,
+        )
+    except TelegramBadRequest as e:
+        logger.error("GUEST send_message failed: %s", e)
+        try:
+            return await bot.send_message(
+                chat_id=message.chat.id,
+                text=text,
+                reply_to_message_id=message.message_id,
+                parse_mode=None,
+            )
+        except Exception as e2:
+            logger.error("GUEST send_message plain failed: %s", e2)
+            return None
+    except Exception as e:
+        logger.error("GUEST send_message failed: %s", e)
+        return None
+
+
+async def _answer_guest_via_query(message: Message, bot: Bot, answer: str) -> None:
+    """Ответить через answer_guest_query — заменяет созданное Telegram сообщение."""
+    html_answer = markdown_to_html(answer)
+    result = InlineQueryResultArticle(
+        id="ask",
+        title="Ответ ИИ",
+        description=answer[:100],
+        input_message_content=InputTextMessageContent(
+            message_text=html_answer,
+            parse_mode=ParseMode.HTML,
+        ),
+    )
+    try:
+        await bot.answer_guest_query(
+            guest_query_id=message.guest_query_id,
+            result=result,
+        )
+    except TelegramBadRequest:
+        result_plain = InlineQueryResultArticle(
+            id="ask",
+            title="Ответ ИИ",
+            description=answer[:100],
+            input_message_content=InputTextMessageContent(message_text=answer),
+        )
+        try:
+            await bot.answer_guest_query(
+                guest_query_id=message.guest_query_id,
+                result=result_plain,
+            )
+        except Exception as e2:
+            logger.error("GUEST answer_guest_query plain failed: %s", e2)
+    except Exception as e:
+        logger.error("GUEST answer_guest_query failed: %s", e)
+
+
+@router.guest_message()
+async def handle_guest_message(message: Message, bot: Bot) -> None:
+    """Guest Mode: @bot запрос в любом чате.
+
+    Работает в чатах, где бота НЕТ в участниках.
+    Сначала пытаемся отправить реплай (send_message),
+    если не получается — answer_guest_query (замена сообщения).
     """
-    query_text = inline_query.query.strip()
+    query_text = (message.text or "").strip()
 
     if not query_text:
-        await inline_query.answer([], cache_time=1, is_personal=True)
+        await _send_guest_reply(
+            message, bot,
+            "Напишите вопрос после @имя_бота, например:\n<code>@имя_бота что такое ИИ?</code>",
+        )
         return
 
-    results = [
-        InlineQueryResultArticle(
-            id="ask",
-            title="Спросить ИИ",
-            description=query_text[:100],
-            input_message_content=InputTextMessageContent(message_text=query_text),
-        )
-    ]
-    await inline_query.answer(results, cache_time=1, is_personal=True)
+    user_id = message.from_user.id if message.from_user else None
+    if user_id is None:
+        return
 
+    if user_storage.is_banned(user_id):
+        return
+
+    if not await rate_limiter.allow(user_id):
+        await _answer_guest_via_query(message, bot, "⏳ Слишком много запросов. Подождите.")
+        return
+
+    await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
+
+    placeholder = await _send_guest_reply(message, bot, "⏳ Думаю...")
+
+    answer = await _get_ai_answer(user_id, query_text)
+
+    if placeholder is not None:
+        html_answer = markdown_to_html(answer)
+        try:
+            await bot.edit_message_text(
+                html_answer,
+                chat_id=message.chat.id,
+                message_id=placeholder.message_id,
+            )
+        except TelegramBadRequest:
+            try:
+                await bot.edit_message_text(
+                    answer,
+                    chat_id=message.chat.id,
+                    message_id=placeholder.message_id,
+                    parse_mode=None,
+                )
+            except Exception:
+                pass
+    else:
+        await _answer_guest_via_query(message, bot, answer)
+
+    history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
+    await reply_context_store.save_context(answer, history, user_id)
+
+
+# --- Fallback: chosen_inline_result (когда бот В чате) ---
 
 @router.chosen_inline_result()
 async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> None:
-    """Пользователь выбрал 'Спросить ИИ' — редактируем сообщение на ответ."""
+    """Fallback: бот в чате, chosen_inline_result стреляет вместо guest_message.
+
+    Редактирует созданное Telegram сообщение через inline_message_id.
+    """
     inline_message_id = chosen.inline_message_id
     user_id = chosen.from_user.id
     query_text = chosen.query.strip()
@@ -491,7 +615,10 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
 
     if not await rate_limiter.allow(user_id):
         try:
-            await bot.edit_message_text("⏳ Слишком много запросов. Подождите.", inline_message_id=inline_message_id)
+            await bot.edit_message_text(
+                "⏳ Слишком много запросов. Подождите.",
+                inline_message_id=inline_message_id,
+            )
         except Exception:
             pass
         return
@@ -503,31 +630,15 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
     except Exception:
         pass
 
-    profile = user_storage.get_profile(user_id)
-    user_custom_prompt = user_settings.get_system_prompt(user_id)
-    system_prompt = build_full_system_prompt(profile, user_custom_prompt)
-
-    model_id = user_settings.get_model_id(user_id)
-    use_thinking = user_settings.use_thinking(user_id)
-
-    try:
-        answer = await asyncio.wait_for(
-            ask_deepseek_with_search(
-                system_prompt, query_text, model=model_id, use_thinking=use_thinking,
-            ),
-            timeout=INLINE_DEEPSEEK_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        answer = "⚠️ Превышен таймаут ответа. Попробуйте более короткий вопрос."
-    except Exception as e:
-        logger.error("INLINE ошибка DeepSeek: %s", e)
-        answer = "⚠️ Ошибка при обращении к нейросети."
+    answer = await _get_ai_answer(user_id, query_text)
 
     html_answer = markdown_to_html(answer)
     try:
         await bot.edit_message_text(html_answer, inline_message_id=inline_message_id)
     except TelegramBadRequest:
-        await bot.edit_message_text(answer, inline_message_id=inline_message_id, parse_mode=None)
+        await bot.edit_message_text(
+            answer, inline_message_id=inline_message_id, parse_mode=None,
+        )
     except Exception as e:
         logger.error("INLINE edit failed: %s", e)
 
