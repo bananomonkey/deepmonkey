@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from aiogram import Router, F, Bot
-from aiogram.enums import ChatAction, MessageEntityType
+from aiogram.enums import ChatAction, MessageEntityType, ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -48,8 +48,9 @@ WELCOME_TEXT = (
     "/prompt — настроить свой системный промпт\n\n"
     "Я также работаю в инлайн-режиме: набери в любом чате\n"
     "<code>@имя_бота твой вопрос</code>\n"
-    "и отправь получившийся результат — я отвечу прямо в этом чате, "
-    "а если кто-то ответит на мой ответ — я продолжу разговор с учётом контекста.\n\n"
+    "и я отвечу реплаем прямо в этот чат — "
+    "даже если меня нет в участниках группы. "
+    "А если кто-то ответит на мой ответ — я продолжу разговор с учётом контекста.\n\n"
     "🔍 Я автоматически ищу в интернете, если ваш запрос требует актуальных данных."
 )
 
@@ -446,11 +447,131 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 
 
 # ============================================================
-#  Инлайн-режим — typewriter-анимация
+#  Инлайн-режим — Guest Mode (@bot запрос) и fallback inline
 # ============================================================
 
 INLINE_DEEPSEEK_TIMEOUT = 90
 
+
+async def _answer_guest_query(message: Message, bot: Bot, answer: str) -> None:
+    """Отвечает на гостевой запрос через answer_guest_query.
+
+    В ответ на guest_message бот использует метод answerGuestQuery:
+    Telegram сам показывает ответ реплаем на сообщение пользователя в чате.
+    """
+    html_answer = markdown_to_html(answer)
+    result = InlineQueryResultArticle(
+        id="ask",
+        title="Ответ ИИ",
+        description=answer[:100],
+        input_message_content=InputTextMessageContent(
+            message_text=html_answer,
+            parse_mode=ParseMode.HTML,
+        ),
+    )
+    try:
+        await bot.answer_guest_query(
+            guest_query_id=message.guest_query_id,
+            result=result,
+        )
+        return
+    except TelegramBadRequest as e:
+        logger.error("GUEST answer_guest_query (HTML) failed: %s", e)
+        result_plain = InlineQueryResultArticle(
+            id="ask",
+            title="Ответ ИИ",
+            description=answer[:100],
+            input_message_content=InputTextMessageContent(message_text=answer),
+        )
+        try:
+            await bot.answer_guest_query(
+                guest_query_id=message.guest_query_id,
+                result=result_plain,
+            )
+            return
+        except Exception as e2:
+            logger.error("GUEST answer_guest_query (plain) failed: %s", e2)
+    except Exception as e:
+        logger.error("GUEST answer_guest_query failed: %s", e)
+
+    try:
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=html_answer,
+            reply_to_message_id=message.message_id,
+        )
+    except TelegramBadRequest:
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=answer,
+            reply_to_message_id=message.message_id,
+            parse_mode=None,
+        )
+    except Exception as e:
+        logger.error("GUEST fallback send_message failed: %s", e)
+
+
+@router.guest_message()
+async def handle_guest_message(message: Message, bot: Bot) -> None:
+    """Guest Mode: пользователь набрал @bot запрос в любом чате.
+
+    Telegram присылает update типа guest_message (Message c guest_query_id).
+    Отвечаем через answer_guest_query — ответ появляется реплаем в этом чате.
+    """
+    query_text = (message.text or "").strip()
+
+    if not query_text:
+        return
+
+    user_id = message.from_user.id if message.from_user else None
+    if user_id is None:
+        logger.warning("GUEST: нет from_user — игнорирую")
+        return
+
+    if user_storage.is_banned(user_id):
+        return
+
+    if not await rate_limiter.allow(user_id):
+        await _answer_guest_query(message, bot, "⏳ Слишком много запросов. Подождите.")
+        return
+
+    await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
+
+    try:
+        await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    except Exception:
+        pass
+
+    profile = user_storage.get_profile(user_id)
+    user_custom_prompt = user_settings.get_system_prompt(user_id)
+    system_prompt = build_full_system_prompt(profile, user_custom_prompt)
+
+    model_id = user_settings.get_model_id(user_id)
+    use_thinking = user_settings.use_thinking(user_id)
+
+    try:
+        answer = await asyncio.wait_for(
+            ask_deepseek_with_search(
+                system_prompt, query_text, model=model_id, use_thinking=use_thinking,
+            ),
+            timeout=INLINE_DEEPSEEK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.error("GUEST таймаут DeepSeek (%ds) для user=%s", INLINE_DEEPSEEK_TIMEOUT, user_id)
+        answer = "⚠️ Превышен таймаут ответа. Попробуйте более короткий вопрос."
+    except Exception as e:
+        logger.error("GUEST ошибка DeepSeek: %s", e)
+        answer = "⚠️ Ошибка при обращении к нейросети."
+
+    await _answer_guest_query(message, bot, answer)
+
+    history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
+    await reply_context_store.save_context(answer, history, user_id)
+
+
+# ============================================================
+#  Fallback: старый инлайн-режим (InlineQuery + ChosenInlineResult)
+# ============================================================
 
 @router.inline_query()
 async def handle_inline(inline_query: InlineQuery) -> None:
