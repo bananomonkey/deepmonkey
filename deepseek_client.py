@@ -289,3 +289,48 @@ async def summarize_profile(old_profile: str, recent_messages: List[Dict[str, st
     except Exception as e:
         logger.error("Ошибка обновления профиля пользователя: %s", e)
         return old_profile
+
+
+MEMBER_PROFILE_SYSTEM_PROMPT = (
+    "Ты ведёшь краткую служебную заметку об участнике группового чата для "
+    "ИИ-ассистента, который тоже в этом чате. На основе сообщений этого "
+    "участника составь/обнови компактный профиль: его имя/ник, характер, "
+    "интересы, привычки общения, известные факты и отношения с другими "
+    "участниками (только то, что видно из переписки). Пиши по-русски, кратко, "
+    "списком из нескольких пунктов, без домыслов и оценок. НЕ включай данные "
+    "повышенной чувствительности. Если новой полезной информации нет — верни "
+    "заметку без изменений. Ответь только текстом заметки, без вступлений."
+)
+
+
+async def summarize_member_profile(
+    chat_id: int,
+    user_id: int,
+    member_name: str,
+    old_profile: str,
+    recent_messages: List[str],
+) -> str:
+    """Обновляет заметку об участнике группы на основе его последних сообщений."""
+    if not recent_messages:
+        return old_profile
+    convo_text = "\n".join(f"- {m}" for m in recent_messages)
+    user_prompt = (
+        f"Участник: {member_name or user_id}\n\n"
+        f"Текущая заметка:\n{old_profile or '(пусто)'}\n\n"
+        f"Последние сообщения участника из группового чата:\n{convo_text}\n\n"
+        f"Обнови заметку об этом участнике."
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=model_manager.get(),
+            messages=[
+                {"role": "system", "content": MEMBER_PROFILE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            timeout=30,
+        )
+        answer = response.choices[0].message.content
+        return answer.strip() if answer else old_profile
+    except Exception as e:
+        logger.error("Ошибка обновления профиля участника группы: %s", e)
+        return old_profile

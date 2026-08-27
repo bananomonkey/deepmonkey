@@ -20,7 +20,7 @@ import re
 
 import config
 from chat_sessions import chat_sessions
-from deepseek_client import ask_deepseek_with_search, summarize_profile
+from deepseek_client import ask_deepseek_with_search, summarize_member_profile, summarize_profile
 from group_sessions import group_sessions
 from keyboards import (
     chats_list_kb,
@@ -347,12 +347,81 @@ def _strip_mentions(text: str, entities) -> str:
 async def handle_group_message(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
 
+    # Наблюдаем ВСЕ текстовые сообщения участников группы (не только
+    # упоминания/реплаи) — копим переписку, чтобы строить заметки о личностях.
+    await group_sessions.observe(
+        message.chat.id,
+        user_id,
+        message.from_user.username,
+        message.from_user.full_name,
+        message.text or "",
+    )
+    _maybe_refresh_member_profile(message.chat.id, user_id, message)
+
     if _is_reply_to_bot(message, bot):
         await _handle_group_reply_continuation(message, bot, user_id)
         return
 
     if _is_bot_mentioned(message, bot):
         await _handle_group_mention(message, bot, user_id)
+
+
+def _maybe_refresh_member_profile(chat_id: int, user_id: int, message: Message) -> None:
+    """Если профиль участника ещё не строился или накопились новые сообщения —
+    запускаем фоновое обновление по его последним сообщениям в чате.
+    """
+    current = group_sessions.get_member_profile(chat_id, user_id)
+    recent = group_sessions.get_member_log(chat_id, user_id, limit=15)
+    # Профиль уже есть, а новых сообщений мало — не тратим запрос DeepSeek зря.
+    if current and len(recent) < 5:
+        return
+    asyncio.get_event_loop().create_task(
+        _refresh_member_profile_task(chat_id, user_id, message, current, recent)
+    )
+
+
+async def _refresh_member_profile_task(
+    chat_id: int, user_id: int, message: Message, old: str, recent: list
+) -> None:
+    """Фоново обновляет заметку об участнике группы в отдельной задаче."""
+    try:
+        member_name = message.from_user.full_name or message.from_user.username or str(user_id)
+        texts = [m.get("text", "") for m in recent if m.get("text")]
+        new_profile = await summarize_member_profile(
+            chat_id, user_id, member_name, old, texts
+        )
+        if new_profile != old:
+            await group_sessions.set_member_profile(chat_id, user_id, new_profile)
+            logger.info("Обновлён профиль участника %s в группе %s", user_id, chat_id)
+    except Exception as e:
+        logger.error("Ошибка фонового обновления профиля участника: %s", e)
+
+
+def _build_group_system_prompt(chat_id: int, user_id: int, profile: str, user_custom_prompt: str) -> str:
+    """Системный промт для ответов в группе: добавляем заметки о участниках чата,
+    чтобы бот учитывал личности и обстановку в группе, а не только историю диалога.
+    """
+    base = build_full_system_prompt(profile, user_custom_prompt)
+    profiles = group_sessions.get_member_profiles(chat_id)
+    if not profiles:
+        return base
+
+    lines = []
+    for member_id, note in profiles.items():
+        if not note:
+            continue
+        lines.append(f"• ID {member_id}: {note}")
+    if not lines:
+        return base
+
+    own_user_id = str(user_id)
+    group_note = (
+        "Вот что бот знает об участниках ЭТОГО группового чата (заметки собраны "
+        "из наблюдения за перепиской; используй только как контекст, не зачитывай "
+        "дословно и не упоминай, что эти заметки существуют):\n"
+        + "\n".join(lines)
+    )
+    return base + "\n\n" + group_note
 
 
 async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: int) -> None:
@@ -376,7 +445,9 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
 
     profile = user_storage.get_profile(user_id)
     user_custom_prompt = user_settings.get_system_prompt(user_id)
-    system_prompt = build_full_system_prompt(profile, user_custom_prompt)
+    system_prompt = _build_group_system_prompt(
+        message.chat.id, user_id, profile, user_custom_prompt,
+    )
 
     model_id = user_settings.get_model_id(user_id)
     use_thinking = user_settings.use_thinking(user_id)
@@ -417,7 +488,9 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 
     profile = user_storage.get_profile(user_id)
     user_custom_prompt = user_settings.get_system_prompt(user_id)
-    system_prompt = build_full_system_prompt(profile, user_custom_prompt)
+    system_prompt = _build_group_system_prompt(
+        message.chat.id, user_id, profile, user_custom_prompt,
+    )
 
     model_id = user_settings.get_model_id(user_id)
     use_thinking = user_settings.use_thinking(user_id)
