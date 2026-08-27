@@ -28,8 +28,26 @@ async def main() -> None:
     logger.info("Бот: @%s (id=%d)", me.username, me.id)
     dp = Dispatcher()
 
+    @dp.update.outer_middleware()
+    async def log_all_updates(handler, event, data):
+        try:
+            from aiogram.types import Message, CallbackQuery, InlineQuery, ChosenInlineResult
+            if isinstance(event, Message):
+                chat_type = getattr(event.chat, "type", "?")
+                logger.info("RX-MSG type=%s chat=%s from=%s text=%r",
+                            chat_type, getattr(event.chat, "id", "?"),
+                            getattr(event.from_user, "id", "?"),
+                            (event.text or event.caption or "")[:60])
+        except Exception:
+            pass
+        return await handler(event, data)
+
     dp.include_router(admin.router)
     dp.include_router(user.router)
+
+    # Маркер версии кода — чтобы в логе на сервере было однозначно видно,
+    # какая сборка реально запущена (и доехал ли деплой).
+    logger.info("CODE-VERSION v20260827-diag-PM")
 
     allowed = [
         UpdateType.MESSAGE,
