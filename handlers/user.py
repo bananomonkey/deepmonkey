@@ -810,14 +810,27 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
 
     Telegram присылает guest_message с guest_query_id.
     ОБЯЗАТЕЛЬНО отвечаем через answerGuestQuery — иначе крестик.
+
+    ВАЖНО про ЛС: из-за Guest Mode обычный текст в ЛС может прийти НЕ как
+    message, а как guest_message. Тогда это ЛС (chat.type == "private") —
+    отвечаем ОБЫЧНЫМ сообщением (message.answer), чтобы пользователь видел
+    ответ как нормальное сообщение в ЛС, а не только inline-превью.
     """
+    chat_type = getattr(message.chat, "type", None)
+    is_private = chat_type == "private"
     query_text = (message.text or "").strip()
 
     if not query_text:
-        await _answer_guest_query_with_result(
-            message, bot, "",
-            "Напишите вопрос после @имя_бота, например:\n<code>@имя_бота что такое ИИ?</code>",
-        )
+        if is_private:
+            await message.answer(
+                "Напишите сообщение — и я отвечу, помня контекст разговора. "
+                "Команда <code>/start</code> — помощь."
+            )
+        else:
+            await _answer_guest_query_with_result(
+                message, bot, "",
+                "Напишите вопрос после @имя_бота, например:\n<code>@имя_бота что такое ИИ?</code>",
+            )
         return
 
     user_id = message.from_user.id if message.from_user else None
@@ -828,20 +841,32 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
         return
 
     if not await rate_limiter.allow(user_id):
-        await _answer_guest_query_with_result(
-            message, bot, query_text,
-            "⏳ Слишком много запросов. Подождите.",
-        )
+        if is_private:
+            await message.answer("⏳ Слишком много сообщений подряд. Подождите немного.")
+        else:
+            await _answer_guest_query_with_result(
+                message, bot, query_text,
+                "⏳ Слишком много запросов. Подождите.",
+            )
         return
 
     await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
 
     answer = await _get_ai_answer(user_id, query_text)
 
-    await _answer_guest_query_with_result(message, bot, query_text, answer)
-
-    history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
-    await reply_context_store.save_context(answer, history, user_id)
+    if is_private:
+        # ЛС-гость: шлём обычное сообщение (как в handle_text), сохраняем контекст чата.
+        try:
+            await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+        except Exception:
+            pass
+        await _safe_answer(message, answer)
+        await chat_sessions.append_message(user_id, "user", query_text)
+        await chat_sessions.append_message(user_id, "assistant", answer)
+    else:
+        await _answer_guest_query_with_result(message, bot, query_text, answer)
+        history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
+        await reply_context_store.save_context(answer, history, user_id)
 
 
 # --- Fallback: chosen_inline_result (когда Guest Mode не активен) ---

@@ -31,13 +31,20 @@ async def main() -> None:
     @dp.update.outer_middleware()
     async def log_all_updates(handler, event, data):
         try:
-            from aiogram.types import Message, CallbackQuery, InlineQuery, ChosenInlineResult
+            from aiogram.types import Message, CallbackQuery, InlineQuery, ChosenInlineResult, Update
+            upd = event if isinstance(event, Update) else None
+            m = getattr(event, "message", None) if not isinstance(event, Message) else event
             if isinstance(event, Message):
-                chat_type = getattr(event.chat, "type", "?")
-                logger.info("RX-MSG type=%s chat=%s from=%s text=%r",
-                            chat_type, getattr(event.chat, "id", "?"),
-                            getattr(event.from_user, "id", "?"),
-                            (event.text or event.caption or "")[:60])
+                m = event
+            if m is not None:
+                chat_type = getattr(m.chat, "type", "?") if m.chat else "?"
+                chat_id = getattr(m.chat, "id", "?") if m.chat else "?"
+                is_guest = getattr(m, "guest_query_id", None)
+                logger.info("RX-TYPE msg%s type=%s chat=%s from=%s text=%r",
+                            "-guest" if is_guest else "",
+                            chat_type, chat_id,
+                            getattr(m.from_user, "id", "?"),
+                            (m.text or m.caption or "")[:60])
             elif isinstance(event, CallbackQuery):
                 logger.info("RX-CB from=%s data=%r", getattr(event.from_user, "id", "?"), (event.data or "")[:60])
             elif isinstance(event, InlineQuery):
@@ -45,7 +52,12 @@ async def main() -> None:
             elif isinstance(event, ChosenInlineResult):
                 logger.info("RX-CHOSEN from=%s result=%r", getattr(event.from_user, "id", "?"), (event.result_id or "")[:60])
             else:
-                logger.info("RX-OTHER type=%s", type(event).__name__)
+                t = str(type(event).__name__)
+                inner = []
+                for attr in ("message", "callback_query", "inline_query", "chosen_inline_result", "guest_message"):
+                    if getattr(event, attr, None) is not None:
+                        inner.append(attr)
+                logger.info("RX-OTHER type=%s inner=%s", t, ",".join(inner) or "-")
         except Exception:
             pass
         return await handler(event, data)
