@@ -81,9 +81,14 @@ async def _safe_answer(message: Message, text_markdown: str) -> None:
     html_text = markdown_to_html(text_markdown)
     try:
         await message.answer(html_text)
+        logger.info("Ответ отправлен в PM (HTML), длина=%d", len(text_markdown))
     except TelegramBadRequest as e:
         logger.error("Не удалось отправить как HTML (%s), отправляю как обычный текст", e)
-        await message.answer(text_markdown, parse_mode=None)
+        try:
+            await message.answer(text_markdown, parse_mode=None)
+            logger.info("Ответ отправлен в PM (plain) после HTML-ошибки")
+        except Exception as e2:
+            logger.error("Не удалось отправить даже обычным текстом: %s", e2)
 
 
 # ============================================================
@@ -269,7 +274,9 @@ async def cb_user_edit_prompt_wrong_type(message: Message) -> None:
 async def handle_text(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
 
+    logger.info("PM от user_id=%s username=%s: %r", user_id, message.from_user.username, (message.text or "")[:80])
     if user_storage.is_banned(user_id):
+        logger.warning("PM игнорирован: user_id=%s забанен", user_id)
         return
 
     if not await rate_limiter.allow(user_id):
