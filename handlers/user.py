@@ -77,8 +77,23 @@ async def _update_profile_background(user_id: int) -> None:
         logger.error("Ошибка фонового обновления профиля пользователя %s: %s", user_id, e)
 
 
+LONG_ANSWER_THRESHOLD = 700
+
+
+def wrap_long_answer(html_text: str) -> str:
+    """Оборачивает длинный ответ в сворачиваемое цитируемое блоку.
+
+    Telegram Bot API поддерживает <blockquote expandable> — цитируемый блок,
+    который сворачивается до одной строки (нажмите, чтобы раскрыть).
+    Короткие ответы оставляем как есть, чтобы не мешать чтению.
+    """
+    if len(html_text) <= LONG_ANSWER_THRESHOLD:
+        return html_text
+    return f"<blockquote expandable>{html_text}</blockquote>"
+
+
 async def _safe_answer(message: Message, text_markdown: str) -> None:
-    html_text = markdown_to_html(text_markdown)
+    html_text = wrap_long_answer(markdown_to_html(text_markdown))
     try:
         await message.answer(html_text)
         logger.info("Ответ отправлен в PM (HTML), длина=%d", len(text_markdown))
@@ -680,8 +695,9 @@ def _format_inline_answer(query_text: str, answer: str) -> str:
     """Финальный HTML ответа для инлайна: вопрос в кавычках + ответ ИИ."""
     html_answer = markdown_to_html(answer)
     if not query_text:
-        return html_answer
-    return f"{_quote_query(query_text)}\n\n{html_answer}"
+        return wrap_long_answer(html_answer)
+    html_answer = f"{_quote_query(query_text)}\n\n{html_answer}"
+    return wrap_long_answer(html_answer)
 
 
 async def _reply_with_quote(message: Message, bot: Bot, question: str, answer: str) -> None:
@@ -689,6 +705,7 @@ async def _reply_with_quote(message: Message, bot: Bot, question: str, answer: s
     html_answer = markdown_to_html(answer)
     if question:
         html_answer = f"{_quote_query(question)}\n\n{html_answer}"
+    html_answer = wrap_long_answer(html_answer)
     try:
         await message.reply(html_answer)
     except TelegramBadRequest as e:
