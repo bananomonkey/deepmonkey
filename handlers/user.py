@@ -15,6 +15,9 @@ from aiogram.types import (
     Message,
 )
 
+import html
+import re
+
 import config
 from chat_sessions import chat_sessions
 from deepseek_client import ask_deepseek_with_search, summarize_profile
@@ -478,6 +481,20 @@ async def _get_ai_answer(user_id: int, query_text: str) -> str:
         return "⚠️ Ошибка при обращении к нейросети."
 
 
+def _quote_query(query_text: str) -> str:
+    """Цитата вопроса пользователя в blockquote (HTML)."""
+    escaped = html.escape(query_text, quote=False).replace("\n", "<br/>")
+    return f"<blockquote>{escaped}</blockquote>"
+
+
+def _format_inline_answer(query_text: str, answer: str) -> str:
+    """Финальный HTML ответа для инлайна: вопрос в кавычках + ответ ИИ."""
+    html_answer = markdown_to_html(answer)
+    if not query_text:
+        return html_answer
+    return f"{_quote_query(query_text)}\n\n{html_answer}"
+
+
 # --- Inline query: показать бота в панели инлайна ---
 
 @router.inline_query()
@@ -507,9 +524,9 @@ async def handle_inline(inline_query: InlineQuery) -> None:
 
 # --- Guest Mode: основной путь для @bot запросов ---
 
-async def _answer_guest_query_with_result(message: Message, bot: Bot, answer: str) -> None:
+async def _answer_guest_query_with_result(message: Message, bot: Bot, query_text: str, answer: str) -> None:
     """Ответить через answerGuestQuery — правильный метод для Guest Mode."""
-    html_answer = markdown_to_html(answer)
+    html_answer = _format_inline_answer(query_text, answer)
     result = InlineQueryResultArticle(
         id="answer",
         title="Ответ ИИ",
@@ -532,7 +549,7 @@ async def _answer_guest_query_with_result(message: Message, bot: Bot, answer: st
         id="answer",
         title="Ответ ИИ",
         description=answer[:100],
-        input_message_content=InputTextMessageContent(message_text=answer),
+        input_message_content=InputTextMessageContent(message_text=html_answer),
     )
     try:
         await bot.answer_guest_query(
@@ -554,7 +571,7 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
 
     if not query_text:
         await _answer_guest_query_with_result(
-            message, bot,
+            message, bot, "",
             "Напишите вопрос после @имя_бота, например:\n<code>@имя_бота что такое ИИ?</code>",
         )
         return
@@ -567,14 +584,17 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
         return
 
     if not await rate_limiter.allow(user_id):
-        await _answer_guest_query_with_result(message, bot, "⏳ Слишком много запросов. Подождите.")
+        await _answer_guest_query_with_result(
+            message, bot, query_text,
+            "⏳ Слишком много запросов. Подождите.",
+        )
         return
 
     await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
 
     answer = await _get_ai_answer(user_id, query_text)
 
-    await _answer_guest_query_with_result(message, bot, answer)
+    await _answer_guest_query_with_result(message, bot, query_text, answer)
 
     history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
     await reply_context_store.save_context(answer, history, user_id)
@@ -643,12 +663,13 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
             pass
         await asyncio.sleep(0.35)
 
-    html_answer = markdown_to_html(answer)
+    # Финальное сообщение: вопрос пользователя в кавычках + ответ ИИ
+    final_html = _format_inline_answer(query_text, answer)
     try:
-        await bot.edit_message_text(html_answer, inline_message_id=inline_message_id)
+        await bot.edit_message_text(final_html, inline_message_id=inline_message_id)
     except TelegramBadRequest:
         await bot.edit_message_text(
-            answer, inline_message_id=inline_message_id, parse_mode=None,
+            final_html, inline_message_id=inline_message_id, parse_mode=None,
         )
     except Exception as e:
         logger.error("INLINE edit failed: %s", e)
