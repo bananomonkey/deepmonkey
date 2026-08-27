@@ -38,6 +38,14 @@ async def main() -> None:
                             chat_type, getattr(event.chat, "id", "?"),
                             getattr(event.from_user, "id", "?"),
                             (event.text or event.caption or "")[:60])
+            elif isinstance(event, CallbackQuery):
+                logger.info("RX-CB from=%s data=%r", getattr(event.from_user, "id", "?"), (event.data or "")[:60])
+            elif isinstance(event, InlineQuery):
+                logger.info("RX-INLINE from=%s query=%r", getattr(event.from_user, "id", "?"), (event.query or "")[:60])
+            elif isinstance(event, ChosenInlineResult):
+                logger.info("RX-CHOSEN from=%s result=%r", getattr(event.from_user, "id", "?"), (event.result_id or "")[:60])
+            else:
+                logger.info("RX-OTHER type=%s", type(event).__name__)
         except Exception:
             pass
         return await handler(event, data)
