@@ -555,6 +555,24 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
 
     # Берём до 250 сообщений из ПОЛНОЙ истории (экспорт юзербота + live).
     texts = group_sessions.get_full_member_log(chat_id, target_id, limit=250)
+
+    # Если историю этого участника ещё не экспортировали (мало сообщений) —
+    # пробуем сами через юзербота добрать его сообщения из чата (до вступления бота).
+    if len(texts) < 25:
+        status = None
+        try:
+            status = await message.reply("Собираю историю сообщений, это займёт ~20-30 сек...")
+        except Exception:
+            pass
+        exported = await _run_userbot_export_now(chat_id, target_id, limit=2000)
+        if exported:
+            texts = group_sessions.get_full_member_log(chat_id, target_id, limit=250)
+        elif status is not None:
+            try:
+                await status.edit_text("Продолжаю по уже известным сообщениям.")
+            except Exception:
+                pass
+
     if not texts:
         await _reply_with_quote(
             message, bot, question,
@@ -680,6 +698,43 @@ async def _reply_with_quote(message: Message, bot: Bot, question: str, answer: s
             await message.reply(plain, parse_mode=None)
         except TelegramBadRequest:
             await message.reply(answer, parse_mode=None)
+
+
+async def _run_userbot_export_now(chat_id: int, user_id: int, limit: int) -> bool:
+    """Запускает userbot_export.py как подпроцесс для конкретного участника.
+
+    Возвращает True, если экспорт прошёл успешно. Используется для автосбора
+    истории участника по запросу его личности.
+    """
+    import os
+    import sys
+
+    if not (config.USERBOT_API_ID and config.USERBOT_API_HASH):
+        return False
+
+    cmd = [
+        sys.executable, "userbot_export.py",
+        "--chat", str(chat_id),
+        "--user", str(user_id),
+        "--limit", str(limit),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=os.path.dirname(os.path.abspath(__file__)) + "/..",
+        )
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.warning("Автоэкспорт участника %s превысил таймаут", user_id)
+            return False
+        return proc.returncode == 0
+    except Exception as e:
+        logger.error("Автоэкспорт участника %s не удался: %s", user_id, e)
+        return False
 
 
 # --- Inline query: показать бота в панели инлайна ---
