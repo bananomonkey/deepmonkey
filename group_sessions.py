@@ -80,6 +80,28 @@ class GroupChatSessions:
             if str(m.get("user_id")) == str(user_id)
         ][-limit:]
 
+    def find_member_by_username(self, chat_id: int, username: str) -> Optional[int]:
+        """Возвращает user_id участника этого чата по его @username или None."""
+        rec = self._data.get(str(chat_id))
+        if not rec:
+            return None
+        uname = username.lower()
+        for m in rec.get("member_log", []):
+            mu = m.get("username")
+            if mu and mu.lower() == uname:
+                return int(m["user_id"])
+        return None
+
+    def member_display_name(self, chat_id: int, user_id: int) -> str:
+        """Последнее известное имя участника (username → один из ников)."""
+        rec = self._data.get(str(chat_id))
+        if not rec:
+            return str(user_id)
+        for m in reversed(rec.get("member_log", [])):
+            if str(m.get("user_id")) == str(user_id):
+                return m.get("name") or m.get("username") or str(user_id)
+        return str(user_id)
+
     def get_member_profiles(self, chat_id: int) -> Dict[str, str]:
         rec = self._data.get(str(chat_id))
         return dict(rec.get("member_profiles", {})) if rec else {}

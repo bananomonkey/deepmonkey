@@ -334,3 +334,40 @@ async def summarize_member_profile(
     except Exception as e:
         logger.error("Ошибка обновления профиля участника группы: %s", e)
         return old_profile
+
+
+PERSONALITY_SYSTEM_PROMPT = (
+    "Ты описываешь личность участника группового чата на основе его сообщений. "
+    "Построй развёрнутый, но компактный и объективный портрет на русском: чем "
+    "занимается/интересуется, характер и манера общения, темы, которые он часто "
+    "поднимает, как относится к другим участникам (только то, что видно из "
+    "сообщений). НЕ выдумывай факты, которых нет в сообщениях, не давай оценочных "
+    "ярлыков без оснований. Если сообщений мало — честно скажи, что известно "
+    "мало. Ответь текстом портрета, без вступлений и лишней воды."
+)
+
+
+async def describe_personality(member_name: str, messages: List[str]) -> str:
+    """Строит описание личности участника группы по его сообщениям (экспорту)."""
+    if not messages:
+        return "По этому участнику пока недостаточно сообщений, чтобы составить описание."
+    convo_text = "\n".join(f"- {m}" for m in messages)
+    user_prompt = (
+        f"Участник: {member_name}\n\n"
+        f"Его сообщения из группового чата:\n{convo_text}\n\n"
+        f"Опиши его личность, интересы и привычки."
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=model_manager.get(),
+            messages=[
+                {"role": "system", "content": PERSONALITY_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            timeout=30,
+        )
+        answer = response.choices[0].message.content
+        return answer.strip() if answer else "Не удалось составить описание."
+    except Exception as e:
+        logger.error("Ошибка описания личности участника группы: %s", e)
+        return "⚠️ Не удалось составить описание личности."

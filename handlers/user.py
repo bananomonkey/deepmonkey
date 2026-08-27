@@ -20,7 +20,12 @@ import re
 
 import config
 from chat_sessions import chat_sessions
-from deepseek_client import ask_deepseek_with_search, summarize_member_profile, summarize_profile
+from deepseek_client import (
+    ask_deepseek_with_search,
+    describe_personality,
+    summarize_member_profile,
+    summarize_profile,
+)
 from group_sessions import group_sessions
 from keyboards import (
     chats_list_kb,
@@ -343,6 +348,46 @@ def _strip_mentions(text: str, entities) -> str:
     return " ".join("".join(chars).split())
 
 
+def _mentioned_username(message: Message, bot: Bot) -> str | None:
+    """Возвращает @username другого участника, упомянутого в тексте (не бота)."""
+    text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    for e in entities:
+        if e.type == MessageEntityType.MENTION:
+            mention = text[e.offset:e.offset + e.length]
+            uname = mention.lstrip("@")
+            if uname.lower() != (bot.username or "").lower() and uname:
+                return uname
+        if e.type == MessageEntityType.TEXT_MENTION:
+            if e.user and e.user.id != bot.id:
+                return e.user.username or str(e.user.id)
+    return None
+
+
+def _reply_target_user(message: Message, bot: Bot) -> Message | None:
+    """Возвращает сообщение, на которое отвечают реплаем (если это НЕ бот)."""
+    reply_to = message.reply_to_message
+    if not reply_to or not reply_to.from_user:
+        return None
+    if reply_to.from_user.id == bot.id:
+        return None
+    if getattr(reply_to, "via_bot", None) and reply_to.via_bot and reply_to.via_bot.id == bot.id:
+        return None
+    return reply_to
+
+
+def _is_about_person(question: str) -> bool:
+    """Похоже ли, что вопрос — 'кто такой / расскажи о' ком-то."""
+    q = question.lower()
+    about_words = [
+        "кто это", "кто такой", "кто такая", "кто таков", "о ком", "про кого",
+        "расскажи о", "расскажи про", "опиши", "что за", "что ты знаешь о",
+        "какой он человек", "расскажи об этом пользователе", "кто этот чел",
+        "что он за человек", "что за человек",
+    ]
+    return any(w in q for w in about_words)
+
+
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text)
 async def handle_group_message(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
@@ -467,6 +512,60 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
     await group_sessions.append_message(message.chat.id, "assistant", answer)
 
 
+async def _handle_personality_request(message: Message, bot: Bot, user_id: int, question: str) -> bool:
+    """Если пользователь спрашивает о личности другого участника (реплай на него
+    или @username в тексте + просьба 'кто это/расскажи о') — строим описание
+    по его сообщениям в этой группе и отвечаем. Иначе возвращаем False.
+    """
+    chat_id = message.chat.id
+
+    # Кандидат №1: реплай на сообщение другого участника (не бота).
+    target_id = None
+    target_name = None
+    reply_target = _reply_target_user(message, bot)
+    if reply_target:
+        target_id = reply_target.from_user.id
+        target_name = reply_target.from_user.full_name or reply_target.from_user.username or str(target_id)
+
+    # Кандидат №2: @username в тексте вопроса.
+    uname = _mentioned_username(message, bot)
+    if uname:
+        member_id = group_sessions.find_member_by_username(chat_id, uname)
+        if member_id is not None:
+            target_id = member_id
+            target_name = group_sessions.member_display_name(chat_id, member_id) or uname
+
+    if target_id is None:
+        return False
+    if not _is_about_person(question):
+        return False
+
+    await bot.send_chat_action(chat_id, ChatAction.TYPING)
+
+    if target_id == user_id:
+        await _reply_with_quote(message, bot, question, "Ты спрашиваешь про себя — а самого себя видно со стороны лучше :)")
+        return True
+
+    messages = group_sessions.get_member_log(chat_id, target_id, limit=60)
+    texts = [m.get("text", "") for m in messages if m.get("text")]
+    if not texts:
+        await _reply_with_quote(
+            message, bot, question,
+            "Пока слишком мало сообщений об этом участнике, чтобы я мог его описать. "
+            "Пусть он пообщается в чате — и я соберу портрет.",
+        )
+        return True
+
+    member_name = f"@{target_name}" if target_name else str(target_id)
+    description = await describe_personality(member_name, texts[-40:])
+
+    await _reply_with_quote(message, bot, question, description)
+
+    await group_sessions.append_message(chat_id, "user", f"Про {member_name}: {question}")
+    await group_sessions.append_message(chat_id, "assistant", description)
+    return True
+
+
 async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> None:
     """Пользователь упомянул @bot в группе — бот отвечает реплаем на это сообщение."""
     if user_storage.is_banned(user_id):
@@ -483,6 +582,10 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 
     await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+    personality = await _handle_personality_request(message, bot, user_id, question)
+    if personality is not None:
+        return
 
     history = group_sessions.get_history(message.chat.id)
 
