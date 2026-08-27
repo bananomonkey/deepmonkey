@@ -93,6 +93,41 @@ def get_value(table: str, key: str):
         conn.close()
 
 
+# --- Экспортированная история чата (из юзербота) ---
+# Ключ таблицы member_log_all = chat_id, value = список сообщений вида
+# [{"user_id": ..., "username": ..., "name": ..., "text": ..., "date": ...}, ...]
+
+MEMBER_LOG_ALL_TABLE = "member_log_all"
+# Сколько сообщений чата хранить в экспортированной истории (наилучший баланс
+# данных и размера БД; для портрета берём до 200-300 последних на участника).
+MEMBER_LOG_ALL_LIMIT = 5000
+
+
+def load_member_log_all(chat_id: int) -> list:
+    """Вернуть экспортированную историю сообщений чата (или [])."""
+    val = get_value(MEMBER_LOG_ALL_TABLE, str(chat_id))
+    if isinstance(val, list):
+        return val
+    return []
+
+
+def save_exported_messages(chat_id: int, messages: list) -> None:
+    """Полностью перезаписать экспортированную историю чата (с усечением)."""
+    if len(messages) > MEMBER_LOG_ALL_LIMIT:
+        messages = messages[-MEMBER_LOG_ALL_LIMIT:]
+    upsert(MEMBER_LOG_ALL_TABLE, str(chat_id), messages)
+
+
+def get_member_log_all_for_user(chat_id: int, user_id: int, limit: int = 300) -> list:
+    """Последние сообщения конкретного участника из экспортированной истории."""
+    all_messages = load_member_log_all(chat_id)
+    matched = [
+        m for m in all_messages
+        if str(m.get("user_id")) == str(user_id) and (m.get("text") or "").strip()
+    ]
+    return matched[-limit:]
+
+
 def diagnose() -> str:
     """Человекочитаемая сводка о состоянии БД — для стартовых логов."""
     d = os.path.dirname(_db_path) or "."

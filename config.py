@@ -16,6 +16,20 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")  # стартов�
 # Tavily — основной поисковик для ИИ (RAG). Бесплатно 1000 запросов/мес.
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
+# --- Юзербот (экспорт истории чата через личный Telegram-аккаунт) ---
+# Bot API не даёт ботам историю группы. Через готовую Telethon-сессию личного
+# аккаунта (userbot) экспортируем переписку в SQLite, чтобы строить портреты
+# участников из ПОЛНОЙ истории, а не только с момента вступления бота.
+# Все переменные опциональны: без них бот работает как раньше (только live-данные).
+USERBOT_API_ID = int(os.getenv("USERBOT_API_ID", "0") or "0")
+USERBOT_API_HASH = os.getenv("USERBOT_API_HASH", "")
+# Путь к Telethon-сессии юзербота (.session файл).
+USERBOT_SESSION_PATH = os.getenv("USERBOT_SESSION_PATH", "sessions/userbot_session")
+# Сколько сообщений брать за один блок чтения при экспорте (пауза между блоками
+# защищает аккаунт от бана за агрессивное чтение истории).
+USERBOT_EXPORT_BATCH = int(os.getenv("USERBOT_EXPORT_BATCH", "100"))
+USERBOT_EXPORT_DELAY = float(os.getenv("USERBOT_EXPORT_DELAY", "1.0"))
+
 # --- База данных (SQLite) ---
 # На Bothost постоянная папка — /app/data (не стирается при деплое/рестарте).
 # Локально можно переопределить через env DB_FILE_PATH, например data/bot.db

@@ -492,3 +492,81 @@ async def fallback_lookup(message: Message, state: FSMContext) -> None:
         f"📝 Заметка ИИ о пользователе (интересы/факты):\n{profile_text}",
         reply_markup=admin_menu_kb(),
     )
+
+
+# ============================================================
+#  Экспорт истории чата через юзербота
+# ============================================================
+# Bot API не даёт ботам историю группы до вступления. Для этого используем
+# личный Telegram-аккаунт (Telethon-сессия). Запуск — вручную (разовый экспорт).
+
+def _userbot_configured() -> bool:
+    return bool(config.USERBOT_API_ID and config.USERBOT_API_HASH)
+
+
+async def _run_userbot_export(chat: str, user: str | None, limit: int, msg: Message) -> None:
+    """Запускает userbot_export.py как подпроцесс и сообщает результат админу."""
+    import os
+    import sys
+
+    env = dict(os.environ)
+    cmd = [sys.executable, "userbot_export.py", "--chat", chat, "--limit", str(limit)]
+    if user:
+        cmd += ["--user", user]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=os.path.dirname(os.path.abspath(__file__)) + "/..",
+        env=env,
+    )
+    stdout, stderr = await proc.communicate()
+    out = (stdout + stderr).decode("utf-8", errors="replace").strip()
+
+    if proc.returncode == 0:
+        await msg.answer(f"\u2705 Экспорт завершён.\n<pre>{out[-1000:]}</pre>")
+    else:
+        await msg.answer(
+            f"\u274c Экспорт не удался (код {proc.returncode}).\n<pre>{out[-1000:]}</pre>"
+        )
+
+
+@router.message(Command("export_chat"))
+async def cmd_export_chat(message: Message) -> None:
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer(
+            "Использование: <code>/export_chat &lt;chat_id|@chat&gt; [limit]</code>\n"
+            "Пример: <code>/export_chat -100123456789 5000</code>"
+        )
+        return
+    if not _userbot_configured():
+        await message.answer(
+            "Юзербот не настроен. Задайте USERBOT_API_ID и USERBOT_API_HASH в .env."
+        )
+        return
+    chat = parts[1]
+    limit = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 2000
+    await message.answer(f"⏳ Запускаю экспорт чата {chat} (до {limit} сообщений)…")
+    asyncio.create_task(_run_userbot_export(chat, None, limit, message))
+
+
+@router.message(Command("export_user"))
+async def cmd_export_user(message: Message) -> None:
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer(
+            "Использование: <code>/export_user &lt;chat_id|@chat&gt; &lt;user_id|@username&gt; [limit]</code>"
+        )
+        return
+    if not _userbot_configured():
+        await message.answer(
+            "Юзербот не настроен. Задайте USERBOT_API_ID и USERBOT_API_HASH в .env."
+        )
+        return
+    chat = parts[1]
+    user = parts[2]
+    limit = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 500
+    await message.answer(f"⏳ Запускаю экспорт участника {user} из чата {chat} (до {limit})…")
+    asyncio.create_task(_run_userbot_export(chat, user, limit, message))

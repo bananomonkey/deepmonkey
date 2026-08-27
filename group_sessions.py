@@ -80,26 +80,74 @@ class GroupChatSessions:
             if str(m.get("user_id")) == str(user_id)
         ][-limit:]
 
+    def get_member_exported_log(self, chat_id: int, user_id: int, limit: int = 300) -> List[str]:
+        """Сообщения участника из полной экспортированной истории (юзербот)."""
+        import database
+        try:
+            messages = database.get_member_log_all_for_user(chat_id, user_id, limit=limit)
+        except Exception as e:
+            logger.error("Не удалось прочитать экспортированную историю: %s", e)
+            return []
+        return [m.get("text", "") for m in messages if m.get("text")]
+
+    def get_full_member_log(self, chat_id: int, user_id: int, limit: int = 300) -> List[str]:
+        """Объединённые сообщения участника: экспорт (полная история) + live.
+
+        Приоритет у экспортированной истории — она полнее (включает переписку
+        до вступления бота). Если её нет, отдаём live-лог.
+        """
+        texts = self.get_member_exported_log(chat_id, user_id, limit=limit)
+        if texts:
+            # Портрет строится из последних сообщений, order — от старых к новым.
+            return texts
+        live = [m.get("text", "") for m in self.get_member_log(chat_id, user_id, limit=limit) if m.get("text")]
+        return live
+
     def find_member_by_username(self, chat_id: int, username: str) -> Optional[int]:
-        """Возвращает user_id участника этого чата по его @username или None."""
-        rec = self._data.get(str(chat_id))
-        if not rec:
-            return None
+        """Возвращает user_id участника этого чата по его @username или None.
+
+        Ищем и в live-логе (сообщения после вступления бота), и в
+        экспортированной истории (юзербот), так как live-лог может быть пуст,
+        если участник не писал после вступления бота.
+        """
         uname = username.lower()
-        for m in rec.get("member_log", []):
-            mu = m.get("username")
-            if mu and mu.lower() == uname:
-                return int(m["user_id"])
+
+        rec = self._data.get(str(chat_id))
+        if rec:
+            for m in rec.get("member_log", []):
+                mu = m.get("username")
+                if mu and mu.lower() == uname:
+                    return int(m["user_id"])
+
+        try:
+            import database
+            for m in database.load_member_log_all(chat_id):
+                mu = m.get("username")
+                if mu and str(mu).lower() == uname:
+                    uid = m.get("user_id")
+                    if uid is not None:
+                        return int(uid)
+        except Exception as e:
+            logger.error("Не удалось искать участника в экспортированной истории: %s", e)
+
         return None
 
     def member_display_name(self, chat_id: int, user_id: int) -> str:
         """Последнее известное имя участника (username → один из ников)."""
+        # Сначала из экспортированной истории (там больше данных).
+        try:
+            import database
+            for m in reversed(database.load_member_log_all(chat_id)):
+                if str(m.get("user_id")) == str(user_id):
+                    return m.get("name") or m.get("username") or str(user_id)
+        except Exception:
+            pass
+
         rec = self._data.get(str(chat_id))
-        if not rec:
-            return str(user_id)
-        for m in reversed(rec.get("member_log", [])):
-            if str(m.get("user_id")) == str(user_id):
-                return m.get("name") or m.get("username") or str(user_id)
+        if rec:
+            for m in reversed(rec.get("member_log", [])):
+                if str(m.get("user_id")) == str(user_id):
+                    return m.get("name") or m.get("username") or str(user_id)
         return str(user_id)
 
     def get_member_profiles(self, chat_id: int) -> Dict[str, str]:

@@ -16,6 +16,11 @@ chats.json
 reply_context.json
 user_settings.json
 
+# Telethon-сессия юзербота — содержит доступ к аккаунту, НЕ коммитим
+sessions/
+*.session
+*.session-journal
+
 # Python
 __pycache__/
 *.pyc

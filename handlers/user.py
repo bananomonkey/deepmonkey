@@ -546,8 +546,8 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
         await _reply_with_quote(message, bot, question, "Ты спрашиваешь про себя — а самого себя видно со стороны лучше :)")
         return True
 
-    messages = group_sessions.get_member_log(chat_id, target_id, limit=60)
-    texts = [m.get("text", "") for m in messages if m.get("text")]
+    # Берём до 250 сообщений из ПОЛНОЙ истории (экспорт юзербота + live).
+    texts = group_sessions.get_full_member_log(chat_id, target_id, limit=250)
     if not texts:
         await _reply_with_quote(
             message, bot, question,
@@ -557,7 +557,7 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
         return True
 
     member_name = f"@{target_name}" if target_name else str(target_id)
-    description = await describe_personality(member_name, texts[-40:])
+    description = await describe_personality(member_name, texts[-200:])
 
     await _reply_with_quote(message, bot, question, description)
 
