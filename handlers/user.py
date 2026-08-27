@@ -356,7 +356,11 @@ async def handle_group_message(message: Message, bot: Bot) -> None:
 
 
 async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: int) -> None:
-    """Продолжение диалога: кто-то ответил реплаем на сообщение бота (инлайн)."""
+    """Продолжение диалога: кто-то ответил реплаем на сообщение бота в группе.
+
+    Контекст берём из той же изолированной истории группы (group_sessions),
+    что и при @упоминании — чтобы продолжение реплаем сохраняло контекст.
+    """
     if user_storage.is_banned(user_id):
         return
 
@@ -364,12 +368,11 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
         await message.reply("⏳ Слишком много сообщений подряд. Подождите немного.")
         return
 
-    reply_to = message.reply_to_message
     await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
-    context = reply_context_store.get_context(reply_to.text or reply_to.caption or "")
-    history = list(context["history"]) if context else []
+    question = message.text or message.caption or ""
+    history = group_sessions.get_history(message.chat.id)
 
     profile = user_storage.get_profile(user_id)
     user_custom_prompt = user_settings.get_system_prompt(user_id)
@@ -380,28 +383,17 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
 
     try:
         answer = await ask_deepseek_with_search(
-            system_prompt, message.text, history=history,
+            system_prompt, question, history=history,
             model=model_id, use_thinking=use_thinking,
         )
     except Exception as e:
         logger.error("Ошибка при ответе в группе: %s", e)
         answer = "⚠️ Произошла ошибка. Попробуйте позже."
 
-    html_answer = markdown_to_html(answer)
-    try:
-        await message.reply(html_answer)
-    except TelegramBadRequest:
-        await message.reply(answer, parse_mode=None)
+    await _reply_with_quote(message, bot, question, answer)
 
-    new_history = history + [
-        {"role": "user", "content": message.text},
-        {"role": "assistant", "content": answer},
-    ]
-    max_messages = config.HISTORY_MAX_TURNS * 2
-    if len(new_history) > max_messages:
-        new_history = new_history[-max_messages:]
-
-    await reply_context_store.save_context(answer, new_history, user_id)
+    await group_sessions.append_message(message.chat.id, "user", question)
+    await group_sessions.append_message(message.chat.id, "assistant", answer)
 
 
 async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> None:
@@ -439,11 +431,7 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
         logger.error("Ошибка при ответе на упоминание в группе: %s", e)
         answer = "⚠️ Произошла ошибка. Попробуйте позже."
 
-    html_answer = markdown_to_html(answer)
-    try:
-        await message.reply(html_answer)
-    except TelegramBadRequest:
-        await message.reply(answer, parse_mode=None)
+    await _reply_with_quote(message, bot, question, answer)
 
     await group_sessions.append_message(message.chat.id, "user", question)
     await group_sessions.append_message(message.chat.id, "assistant", answer)
@@ -493,6 +481,22 @@ def _format_inline_answer(query_text: str, answer: str) -> str:
     if not query_text:
         return html_answer
     return f"{_quote_query(query_text)}\n\n{html_answer}"
+
+
+async def _reply_with_quote(message: Message, bot: Bot, question: str, answer: str) -> None:
+    """Отправляет реплай в чат: вопрос в кавычках + ответ ИИ."""
+    html_answer = markdown_to_html(answer)
+    if question:
+        html_answer = f"{_quote_query(question)}\n\n{html_answer}"
+    try:
+        await message.reply(html_answer)
+    except TelegramBadRequest as e:
+        logger.error("Не удалось отправить как HTML (%s), шлю обычным текстом", e)
+        plain = f"«{question}»\n\n{answer}" if question else answer
+        try:
+            await message.reply(plain, parse_mode=None)
+        except TelegramBadRequest:
+            await message.reply(answer, parse_mode=None)
 
 
 # --- Inline query: показать бота в панели инлайна ---
@@ -549,7 +553,9 @@ async def _answer_guest_query_with_result(message: Message, bot: Bot, query_text
         id="answer",
         title="Ответ ИИ",
         description=answer[:100],
-        input_message_content=InputTextMessageContent(message_text=html_answer),
+        input_message_content=InputTextMessageContent(
+            message_text=f"«{query_text}»\n\n{answer}" if query_text else answer,
+        ),
     )
     try:
         await bot.answer_guest_query(
@@ -668,8 +674,9 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
     try:
         await bot.edit_message_text(final_html, inline_message_id=inline_message_id)
     except TelegramBadRequest:
+        plain = f"«{query_text}»\n\n{answer}" if query_text else answer
         await bot.edit_message_text(
-            final_html, inline_message_id=inline_message_id, parse_mode=None,
+            plain, inline_message_id=inline_message_id, parse_mode=None,
         )
     except Exception as e:
         logger.error("INLINE edit failed: %s", e)

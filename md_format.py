@@ -8,8 +8,19 @@ _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.*)$", re.MULTILINE)
 _LIST_MARKER_RE = re.compile(r"^(\s*)[-*][ \t]+", re.MULTILINE)
 _LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
-_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__", re.DOTALL)
-_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)|(?<!_)_(?!_)([^_\n]+?)_(?!_)")
+# Жирный: **text** (или __text__ со словесными границами). Требует, чтобы
+# маркер не был частью более длинного набора звёздочек/подчёркиваний (***, ___).
+_BOLD_RE = re.compile(
+    r"(?<!\*)\*\*(?!\*)(.+?)\*\*(?!\*)(?!\*)|(?<![\w_])__(?!_)(.+?)__(?!_)(?![\w_])",
+    re.DOTALL,
+)
+# Курсив: *text* или _text_. Требует, чтобы маркер имел границы слов с обеих
+# сторон — иначе _ внутри кода/имен (this_is) и одиночные * ломаются,
+# а ___triple___ даёт невалидный вложенный HTML (ошибка "can't parse entities").
+_ITALIC_RE = re.compile(
+    r"(?<![*_\w])\*(?!\*)([^*\n]+?)\*(?!\*)(?![*_\w])|"
+    r"(?<![*_\w])_(?!_)([^_\n]+?)_(?!_)(?![*_\w])",
+)
 
 
 def markdown_to_html(text: str) -> str:
@@ -58,7 +69,15 @@ def markdown_to_html(text: str) -> str:
     text = _HEADING_RE.sub(lambda m: f"<b>{m.group(1).strip()}</b>", text)
 
     # 5. Ссылки [текст](url)
-    text = _LINK_RE.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', text)
+    def _link_replace(m: "re.Match[str]") -> str:
+        label = m.group(1)
+        # Шаг 1 уже сделал html.escape по всему тексту (в т.ч. URL: & -> &amp;).
+        # Дополнительно защищаем только двойные кавычки внутри атрибута, чтобы
+        # повторно не умножать &amp;.
+        url = m.group(2).replace('"', "&quot;")
+        return f'<a href="{url}">{label}</a>'
+
+    text = _LINK_RE.sub(_link_replace, text)
 
     # 6. Жирный текст (после списков/заголовков, до курсива)
     text = _BOLD_RE.sub(lambda m: f"<b>{m.group(1) or m.group(2)}</b>", text)
