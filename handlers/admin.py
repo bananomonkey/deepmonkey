@@ -440,3 +440,55 @@ async def unban_user_finish(message: Message, state: FSMContext) -> None:
         logger.info("Админ %s разбанил пользователя %s", message.from_user.id, user_id)
     else:
         await message.answer("Пользователь с таким ID не найден в базе.", reply_markup=admin_menu_kb())
+
+
+# ============================================================
+#  Fallback: поиск пользователя по ID в любом состоянии
+# ============================================================
+
+@router.message(F.text)
+async def fallback_lookup(message: Message, state: FSMContext) -> None:
+    """Если админ ввёл числовой ID пользователя из базы — показать карточку.
+
+    Срабатывает только когда нет активного FSM-этапа (например, state
+    сброшен после рестарта бота), иначе перехватили бы state-хендлеры выше.
+    Для чисел, которых нет в базе, отвечаем подсказкой, чтобы не утекало в ИИ.
+    """
+    if state is None:
+        return
+    current = await state.get_state()
+    if current is not None:
+        return
+
+    text = message.text.strip()
+    if not text.lstrip("-").isdigit():
+        return
+
+    user_id = int(text)
+    if not user_storage.contains(user_id):
+        await message.answer("Пользователь с таким ID не найден в базе.", reply_markup=admin_menu_kb())
+        return
+
+    record = user_storage.get_record(user_id)
+    profile_text = record.get("profile") or "— пока нет данных —"
+    status = "🚫 забанен" if record.get("banned") else "активен"
+    username = f"@{record['username']}" if record.get("username") else "—"
+
+    model_key = user_settings.get_model(user_id)
+    model_label = "⚡ Быстрая" if model_key == "fast" else "🧠 Думающая"
+    custom_prompt = user_settings.get_system_prompt(user_id)
+    custom_prompt_display = f"<code>{custom_prompt}</code>" if custom_prompt else "— не задан —"
+
+    await message.answer(
+        f"👤 <b>Пользователь {user_id}</b>\n"
+        f"Имя: {record.get('full_name') or '—'}\n"
+        f"Username: {username}\n"
+        f"Статус: {status}\n"
+        f"Сообщений отправлено: {record.get('message_count', 0)}\n"
+        f"Первое обращение: {record.get('first_seen', '—')}\n"
+        f"Последняя активность: {record.get('last_seen', '—')}\n\n"
+        f"⚙️ Модель: {model_label}\n"
+        f"🧠 Пользовательский промпт:\n{custom_prompt_display}\n\n"
+        f"📝 Заметка ИИ о пользователе (интересы/факты):\n{profile_text}",
+        reply_markup=admin_menu_kb(),
+    )
