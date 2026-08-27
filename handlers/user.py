@@ -633,53 +633,88 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
 
     await user_storage.touch(user_id, chosen.from_user.username, chosen.from_user.full_name)
 
-    # --- Фаза 1: анимация "думает", пока генерируется ответ (может занять секунды) ---
-    stop_thinking = asyncio.Event()
-
-    async def _thinking_animation() -> None:
-        frames = ["⏳ Думаю", "⏳ Думаю.", "⏳ Думаю..", "⏳ Думаю..."]
-        i = 0
-        try:
-            while not stop_thinking.is_set():
-                try:
-                    await bot.edit_message_text(frames[i % len(frames)], inline_message_id=inline_message_id)
-                except Exception:
-                    pass  # "message is not modified" / rate limit на edit — пропускаем кадр, не критично
-                i += 1
-                await asyncio.sleep(1.0)
-        except asyncio.CancelledError:
-            pass
-
-    anim_task = asyncio.create_task(_thinking_animation())
+    # Однократный статус "думает" (частый edit в цикле вызывает flood control)
     try:
-        answer = await _get_ai_answer(user_id, query_text)
-    finally:
-        stop_thinking.set()
-        anim_task.cancel()
+        await bot.edit_message_text("⏳ Думаю...", inline_message_id=inline_message_id)
+    except Exception:
+        pass
 
-    # --- Фаза 2: печатаем ответ по кусочкам (typewriter), как у Mira ---
-    # Режем СЫРОЙ текст (не HTML), чтобы не резать посреди тега при промежуточных
-    # кадрах — иначе edit_message_text с parse_mode=HTML будет падать на каждом шаге.
-    steps = min(12, max(3, len(answer) // 60))
-    chunk_size = max(1, len(answer) // steps)
-    for cut in range(chunk_size, len(answer), chunk_size):
-        try:
-            await bot.edit_message_text(answer[:cut] + " ▌", inline_message_id=inline_message_id, parse_mode=None)
-        except Exception:
-            pass
-        await asyncio.sleep(0.35)
+    answer = await _get_ai_answer(user_id, query_text)
 
-    # Финальное сообщение: вопрос пользователя в кавычках + ответ ИИ
+    # --- Облёгчённый typewriter + обязательный финальный edit с retry при flood ---
+    # Telegram жёстко лимитирует editMessageText (~1/сек на чат). Частые edit
+    # (как анимация каждую секунду + typewriter каждые 0.35с) провоцируют
+    # "Flood control exceeded" и ответ теряется. Поэтому печатаем редко и у
+    # финального edit есть retry с паузой.
+    await _typewriter_edit(bot, inline_message_id, answer)
+
     final_html = _format_inline_answer(query_text, answer)
-    try:
-        await bot.edit_message_text(final_html, inline_message_id=inline_message_id)
-    except TelegramBadRequest:
-        plain = f"«{query_text}»\n\n{answer}" if query_text else answer
-        await bot.edit_message_text(
-            plain, inline_message_id=inline_message_id, parse_mode=None,
-        )
-    except Exception as e:
-        logger.error("INLINE edit failed: %s", e)
+    await _edit_with_retry(
+        bot,
+        inline_message_id=inline_message_id,
+        html=final_html,
+        plain=f"«{query_text}»\n\n{answer}" if query_text else answer,
+    )
 
     history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
     await reply_context_store.save_context(answer, history, user_id)
+
+
+async def _typewriter_edit(bot: Bot, inline_message_id: str, answer: str) -> None:
+    """Редкая typewriter-анимация. Telegram лимитирует editMessageText
+    (~1/сек на чат), поэтому используем НЕ больше 4-5 кадров с паузами >=1.5с.
+    Любая ошибка (в т.ч. flood) — пропускаем кадр и идём дальше.
+    """
+    steps = min(4, max(2, len(answer) // 120))
+    chunk_size = max(1, len(answer) // steps)
+    cuts = list(range(chunk_size, len(answer), chunk_size))
+    for i, cut in enumerate(cuts, 1):
+        try:
+            await bot.edit_message_text(
+                answer[:cut] + " ▌",
+                inline_message_id=inline_message_id,
+                parse_mode=None,
+            )
+        except Exception:
+            pass  # flood / message not modified — не критично, пропускаем
+        await asyncio.sleep(1.5 if i < len(cuts) else 0)
+
+
+async def _edit_with_retry(bot: Bot, inline_message_id: str, html: str, plain: str) -> None:
+    """Финальный edit с повторными попытками при flood control
+
+    (Telegram: 'Too Many Requests: retry after N' — на editMessageText лимит
+    достигается легко, и без retry ответ просто терялся).
+    """
+    delay = 2.0
+    for attempt in range(4):
+        try:
+            await bot.edit_message_text(html, inline_message_id=inline_message_id)
+            return
+        except TelegramBadRequest as e:
+            # пробуем обычным текстом (без HTML) один раз
+            try:
+                await bot.edit_message_text(
+                    plain, inline_message_id=inline_message_id, parse_mode=None,
+                )
+                return
+            except Exception:
+                pass
+            # flood control — ждём и пробуем снова
+            retry_after = _extract_retry_after(e)
+            await asyncio.sleep(retry_after or delay)
+            delay *= 2
+        except Exception as e:
+            logger.error("INLINE edit failed (attempt %d/4): %s", attempt + 1, e)
+            await asyncio.sleep(delay)
+            delay *= 2
+    logger.error("INLINE: не удалось отправить финальный ответ после 4 попыток")
+
+
+def _extract_retry_after(exc: Exception) -> int | None:
+    """Достаёт число секунд из 'retry after N' в тексте ошибки."""
+    text = str(exc)
+    match = re.search(r"retry\s+after\s+(\d+)", text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return None
