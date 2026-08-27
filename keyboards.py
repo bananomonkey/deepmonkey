@@ -85,3 +85,13 @@ def user_prompt_cancel_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Отмена", callback_data="user_prompt_cancel")],
         ]
     )
+
+
+def inline_placeholder_kb() -> InlineKeyboardMarkup:
+    """
+    Клавиатура-заглушка для классического inline-результата. БЕЗ неё Telegram
+    не пришлёт inline_message_id в chosen_inline_result (см. официальный Bot
+    API: 'inline_message_id: Available only if there is an inline keyboard
+    attached to the message'), и бот не сможет отредактировать сообщение.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏳", callback_data="noop")]])

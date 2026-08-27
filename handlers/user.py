@@ -21,6 +21,7 @@ from deepseek_client import ask_deepseek_with_search, summarize_profile
 from group_sessions import group_sessions
 from keyboards import (
     chats_list_kb,
+    inline_placeholder_kb,
     model_select_kb,
     user_prompt_kb,
     user_prompt_cancel_kb,
@@ -497,7 +498,8 @@ async def handle_inline(inline_query: InlineQuery) -> None:
             id="ask",
             title="Спросить ИИ",
             description=query_text[:100],
-            input_message_content=InputTextMessageContent(message_text=query_text),
+            input_message_content=InputTextMessageContent(message_text=f"❓ {query_text}"),
+            reply_markup=inline_placeholder_kb(),
         )
     ]
     await inline_query.answer(results, cache_time=1, is_personal=True)
@@ -605,12 +607,41 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
 
     await user_storage.touch(user_id, chosen.from_user.username, chosen.from_user.full_name)
 
-    try:
-        await bot.edit_message_text("⏳ Думаю...", inline_message_id=inline_message_id)
-    except Exception:
-        pass
+    # --- Фаза 1: анимация "думает", пока генерируется ответ (может занять секунды) ---
+    stop_thinking = asyncio.Event()
 
-    answer = await _get_ai_answer(user_id, query_text)
+    async def _thinking_animation() -> None:
+        frames = ["⏳ Думаю", "⏳ Думаю.", "⏳ Думаю..", "⏳ Думаю..."]
+        i = 0
+        try:
+            while not stop_thinking.is_set():
+                try:
+                    await bot.edit_message_text(frames[i % len(frames)], inline_message_id=inline_message_id)
+                except Exception:
+                    pass  # "message is not modified" / rate limit на edit — пропускаем кадр, не критично
+                i += 1
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            pass
+
+    anim_task = asyncio.create_task(_thinking_animation())
+    try:
+        answer = await _get_ai_answer(user_id, query_text)
+    finally:
+        stop_thinking.set()
+        anim_task.cancel()
+
+    # --- Фаза 2: печатаем ответ по кусочкам (typewriter), как у Mira ---
+    # Режем СЫРОЙ текст (не HTML), чтобы не резать посреди тега при промежуточных
+    # кадрах — иначе edit_message_text с parse_mode=HTML будет падать на каждом шаге.
+    steps = min(12, max(3, len(answer) // 60))
+    chunk_size = max(1, len(answer) // steps)
+    for cut in range(chunk_size, len(answer), chunk_size):
+        try:
+            await bot.edit_message_text(answer[:cut] + " ▌", inline_message_id=inline_message_id, parse_mode=None)
+        except Exception:
+            pass
+        await asyncio.sleep(0.35)
 
     html_answer = markdown_to_html(answer)
     try:
