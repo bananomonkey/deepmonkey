@@ -753,7 +753,18 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
         return True
 
     member_name = f"@{target_name}" if target_name else str(target_id)
-    description = await describe_personality(member_name, texts[-200:])
+
+    # Кэш по @username: повторно не тратим токены на описание личности.
+    if uname:
+        cached = group_sessions.get_cached_personality(uname)
+        if cached is not None:
+            logger.info("PERSONA: портрет %s из кэша (сообщений: %s)", member_name, cached.get("message_count"))
+            description = cached["personality"]
+        else:
+            description = await describe_personality(member_name, texts[-200:])
+            group_sessions.set_cached_personality(uname, description, len(texts))
+    else:
+        description = await describe_personality(member_name, texts[-200:])
 
     await _reply_with_quote(message, bot, question, description)
 
@@ -1063,11 +1074,18 @@ async def _try_global_personality(query_text: str, bot_username: str) -> str | N
         return None
     if uname.lower() == (bot_username or "").lower():
         return None
+    # Кэш: если портрет уже составлен — отдаём его, не тратя токены.
+    cached = group_sessions.get_cached_personality(uname)
+    if cached is not None:
+        logger.info("GLOBAL_PERSONA: портрет @%s из кэша (сообщений: %s)", uname, cached.get("message_count"))
+        return cached["personality"]
     texts = group_sessions.get_global_member_log(uname, limit=300)
     if len(texts) < 15:
         return None
     logger.info("GLOBAL_PERSONA: %s сообщений для @%s (из базы, без интернет-поиска)", len(texts), uname)
-    return await describe_personality(f"@{uname}", texts[-200:])
+    portrait = await describe_personality(f"@{uname}", texts[-200:])
+    group_sessions.set_cached_personality(uname, portrait, len(texts))
+    return portrait
 
 
 def _extract_username(text: str) -> str | None:

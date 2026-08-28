@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from typing import Dict
 
 import config
@@ -101,6 +102,35 @@ MEMBER_LOG_ALL_TABLE = "member_log_all"
 # Сколько сообщений чата хранить в экспортированной истории (наилучший баланс
 # данных и размера БД; для портрета берём до 200-300 последних на участника).
 MEMBER_LOG_ALL_LIMIT = 5000
+
+
+# --- Кэш портретов личностей (чтобы не тратить токены повторно) ---
+# Ключ = @username в нижнем регистре, value = {"personality": str,
+# "message_count": int, "updated": float}.
+PERSONALITY_CACHE_TABLE = "personality_cache"
+
+
+def get_personality_cache(username: str):
+    """Вернуть кэшированный портрет по @username (или None)."""
+    key = str(username).lower().lstrip("@")
+    val = get_value(PERSONALITY_CACHE_TABLE, key)
+    if isinstance(val, dict) and val.get("personality"):
+        return val
+    return None
+
+
+def set_personality_cache(username: str, personality: str, message_count: int) -> None:
+    """Сохранить портрет участника по @username в кэш."""
+    key = str(username).lower().lstrip("@")
+    upsert(
+        PERSONALITY_CACHE_TABLE,
+        key,
+        {
+            "personality": personality,
+            "message_count": int(message_count),
+            "updated": time.time(),
+        },
+    )
 
 
 def load_member_log_all(chat_id: int) -> list:

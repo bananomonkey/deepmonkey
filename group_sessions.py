@@ -169,6 +169,15 @@ class GroupChatSessions:
             return [t for t in database.get_member_log_all_for_user_global(user_id, limit=limit) if t]
         return []
 
+    def get_cached_personality(self, username: str) -> dict | None:
+        """Кэшированный портрет по @username (dict c personality) или None."""
+        return database.get_personality_cache(username)
+
+    def set_cached_personality(self, username: str, personality: str, message_count: int) -> None:
+        """Сохранить портрет по @username в кэш, чтобы не тратить токены повторно."""
+        if personality:
+            database.set_personality_cache(username, personality, message_count)
+        
     def _resolve_global_user_id(self, username: str) -> Optional[int]:
         """Найти user_id по @username во всех live-логах групп (обобщённо).
 
