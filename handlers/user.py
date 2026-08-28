@@ -392,10 +392,7 @@ async def handle_photo_pm(message: Message, bot: Bot) -> None:
     # Берём самое большое разрешение из присланных
     photo = message.photo[-1]
     try:
-        file = await bot.get_file(photo.file_id)
-        data = (await bot.download_file(file.file_path)).read()
-        import base64
-        data_url = "data:image/jpeg;base64," + base64.b64encode(data).decode()
+        data_url = await _download_image_data(bot, photo)
     except Exception as e:
         logger.error("Не удалось скачать фото: %s", e)
         await message.answer("⚠️ Не удалось обработать фото.")
@@ -589,6 +586,75 @@ async def handle_group_message(message: Message, bot: Bot) -> None:
 
     if _is_bot_mentioned(message, bot):
         await _handle_group_mention(message, bot, user_id)
+
+
+async def _download_image_data(bot: Bot, photo) -> str:
+    """Скачать фото и вернуть data URL для vision-модели."""
+    import base64
+    file = await bot.get_file(photo.file_id)
+    data = (await bot.download_file(file.file_path)).read()
+    return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}), F.photo)
+async def handle_group_photo(message: Message, bot: Bot) -> None:
+    """Фото в группе (реплай на сообщение бота или @упоминание с фото-подписью) →
+    анализ картинки vision-моделью, с контекстом группы."""
+    user_id = message.from_user.id
+    if user_storage.is_banned(user_id):
+        return
+
+    if not _is_reply_to_bot(message, bot) and not _is_bot_mentioned(message, bot):
+        return
+
+    if not user_settings.is_multimodal_enabled():
+        await message.reply("👁 Мультимодальность сейчас выключена (включите в админ-панели).")
+        return
+
+    if not await rate_limiter.allow(user_id):
+        await message.reply("⏳ Слишком много сообщений подряд. Подождите немного.")
+        return
+
+    await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
+    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+    try:
+        photo = message.photo[-1]
+        data_url = await _download_image_data(bot, photo)
+    except Exception as e:
+        logger.error("Не удалось скачать фото в группе: %s", e)
+        await message.reply("⚠️ Не удалось обработать фото.")
+        return
+
+    caption = (message.caption or "").strip()
+    if _is_bot_mentioned(message, bot):
+        caption = _strip_mentions(caption, message.caption_entities or [])
+    question = caption or "Что на этом фото?"
+
+    # Знания о участниках чата + live-профили.
+    profile = user_storage.get_profile(user_id)
+    user_custom_prompt = user_settings.get_system_prompt(user_id)
+    system_prompt = _build_group_system_prompt(
+        message.chat.id, user_id, profile, user_custom_prompt,
+    )
+    history = group_sessions.get_history(message.chat.id)
+
+    model_id = MODEL_MAP["vision"]
+    use_thinking = False
+
+    try:
+        answer = await ask_deepseek_with_search(
+            system_prompt, question, history=history,
+            model=model_id, use_thinking=use_thinking, images=[data_url],
+        )
+    except Exception as e:
+        logger.error("Ошибка при ответе на фото в группе: %s", e)
+        answer = "⚠️ Произошла ошибка при анализе фото. Попробуйте позже."
+
+    await _reply_with_quote(message, bot, question, answer)
+
+    await group_sessions.append_message(message.chat.id, "user", f"[фото] {question}")
+    await group_sessions.append_message(message.chat.id, "assistant", answer)
 
 
 def _maybe_refresh_member_profile(chat_id: int, user_id: int, message: Message) -> None:

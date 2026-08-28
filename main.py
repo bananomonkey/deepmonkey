@@ -112,7 +112,18 @@ async def main() -> None:
     # В фоне, чтобы не задерживать старт; пересобирает только новые/устаревшие.
     try:
         import member_knowledge
-        asyncio.create_task(member_knowledge.build_member_knowledge())
+
+        async def warm_up_knowledge():
+            try:
+                await member_knowledge.build_member_knowledge()
+            finally:
+                # Тёплый индекс поиска по экспорту (чтобы первый запрос не тормозил).
+                try:
+                    await asyncio.to_thread(member_knowledge._build_search_index, True)
+                except Exception as e:
+                    logger.warning("Не удалось построить индекс поиска: %s", e)
+
+        asyncio.create_task(warm_up_knowledge())
         logger.info("Запущено фоновое построение базы знаний об участниках")
     except Exception as e:
         logger.warning("Не удалось запустить построение базы знаний: %s", e)

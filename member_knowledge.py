@@ -101,6 +101,9 @@ async def build_member_knowledge() -> Dict[str, dict]:
     """
     from deepseek_client import describe_personality
 
+    # Новые данные экспорта — сбрасываем кэш индекса поиска.
+    _reset_search_cache()
+
     # Сначала соберём агрегированную статистику по участникам.
     user_texts: Dict[str, List[str]] = {}
     chat_messages: Dict[str, list] = {}
@@ -265,12 +268,14 @@ async def ai_decides_chat_search(user_text: str) -> bool:
 def search_exported_messages(query: str, chat_id=None, limit: int = 15) -> str:
     """Найти сообщения из экспорта, релевантные запросу.
 
-    Ищем по ключевым словам запроса (имена/кликухи), возвращаем красивый
-    отрывок переписки в виде «имя: текст». Если chat_id задан — только этот чат,
-    иначе по всем экспортированным.
+    Ищем по ключевым словам запроса (имена/кликухи, с учётом склонений),
+    возвращаем красивый отрывок переписки в виде «имя: текст». Если chat_id
+    задан — только этот чат, иначе по всем экспортированным.
     """
-    # Ключевые токены: упомянутые имена/@username/id и длинные слова запроса.
-    tokens = _query_tokens(query)
+    # Ключевые токены: упомянутые имена/@username/id и значимые слова запроса.
+    tokens = render_query_terms(query)
+    if not tokens:
+        return ""
 
     results = []
     for cid, messages in database.iter_member_log_all_chats():
@@ -288,71 +293,153 @@ def search_exported_messages(query: str, chat_id=None, limit: int = 15) -> str:
     return "\n".join(results[-limit:])
 
 
-def _query_tokens(query: str) -> List[str]:
-    """Извлечь из запроса ключевые токены для поиска по переписке: имена,
-    @username, user_id и длинные значимые слова."""
-    q = str(query or "")
-    tokens = set()
-    for m in re.finditer(r"@([A-Za-z0-9_]+)", q):
-        tokens.add(m.group(1).lower())
-    for m in re.finditer(r"user(\d+)", q, re.IGNORECASE):
-        tokens.add(m.group(1))
-    for m in re.finditer(r"(?<![@\d])(\d{7,})", q):
-        tokens.add(m.group(1))
-    # Длинные слова (>=4 буквы) из кириллицы/латиницы как ключевые.
-    for w in re.findall(r"[а-яёa-z]{4,}", q.lower()):
-        tokens.add(w)
-    tokens.discard("")
-    return sorted(tokens)
+
+# ---------------------------------------------------------------------------
+#  Поиск по экспорту с учётом склонений/транслита
+#  Строим индекс «отличительных» терминов переписки (клички, имена, сленг),
+#  а запросные слова фаззи-сопоставляем с ними (чтобы «лысого» находил
+#  «лысый», «вастика» — «вастик» и т.п.).
+# ---------------------------------------------------------------------------
+
+# Порог «отличительности»: слово встречается не чаще этого числа сообщений —
+# значит это скорее кличка/имя/местный сленг, а не общая лексика.
+DISTINCTIVE_MAX = 400
+# Сколько фаззи-кандидатов проверяем на одно слово (защита от слишком больших корзин).
+MAX_BUCKET_CHECK = 300
+_CACHE_TTL = 600  # 10 минут
+
+_TRANS = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "",
+    "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
 
 
-def _all_known_tokens():
-    """Все известные имена участников и кликухи чатов (для детерминированной
-    проверки, относится ли запрос к людям из чата)."""
-    known = set()
-    knowledge = database.load_member_knowledge()
-    for uid, rec in knowledge.items():
-        name = rec.get("name") or ""
-        for w in re.findall(r"[а-яёa-z]{3,}", str(name).lower()):
-            known.add(w)
-        for nick in (rec.get("nicknames") or []):
-            known.add(str(nick).lower())
-    # Имена участников из экспортированной истории (не зависит от построения портретов).
-    for _chat_id, messages in database.iter_member_log_all_chats():
+def _translit_lat(s: str) -> str:
+    out = []
+    for ch in str(s).lower():
+        if "а" <= ch <= "я" or ch == "ё":
+            out.append(_TRANS.get(ch, ch))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _norm_word(s: str) -> str:
+    """Нижний регистр, без спецсимволов, буквы любого алфавита + цифры."""
+    return re.sub(r"[^a-zа-яё0-9]", "", str(s).lower())
+
+
+def _loose_match(a: str, b: str) -> bool:
+    """Слабое совпадение двух нормализованных слов (фаззи + общий префикс)."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    import difflib
+    # Общий префикс 3 символов — грубое, но дешёвое совпадение склонений.
+    if len(a) >= 3 and len(b) >= 3 and a[:3] == b[:3]:
+        return True
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.6
+
+
+_SEARCH_INDEX = None
+_SEARCH_INDEX_TS = 0.0
+
+
+def _build_search_index(refresh: bool = False):
+    """Однопроходно построить индекс поиска по экспорту.
+
+    terms — все «искомые» термины (отличительные слова + имена участников),
+    prefix_map — word[:3] -> [terms...] для быстрого фаззи-расширения.
+    """
+    global _SEARCH_INDEX, _SEARCH_INDEX_TS
+    now = time_now()
+    if _SEARCH_INDEX and not refresh and (now - _SEARCH_INDEX_TS) < _CACHE_TTL:
+        return _SEARCH_INDEX
+
+    counter = {}
+    member_names = set()
+    for _cid, messages in database.iter_member_log_all_chats():
         for m in messages:
-            fr = str(m.get("from") or "")
-            for w in re.findall(r"[а-яёa-z]{3,}", fr.lower()):
-                known.add(w)
-    # Кликухи всех чатов.
-    table = database.CHAT_NICKNAMES_TABLE
-    from database import _conn, init_table
-    init_table(table)
-    conn = _conn()
-    try:
-        for _key, value in conn.execute(f"SELECT key, value FROM {table}"):
-            try:
-                nicks = json.loads(value)
-            except Exception:
-                nicks = []
-            for nick in (nicks if isinstance(nicks, list) else []):
-                known.add(str(nick).lower())
-    finally:
-        conn.close()
-    return known
+            fr = m.get("from") or m.get("username") or ""
+            n = _norm_word(fr)
+            if n and len(n) >= 3:
+                member_names.add(n)
+                member_names.add(_translit_lat(n))
+            t = m.get("text")
+            if isinstance(t, str) and t.strip():
+                for w in re.findall(r"[а-яёa-z]{3,}", t.lower()):
+                    if w in _STOPWORDS:
+                        continue
+                    counter[w] = counter.get(w, 0) + 1
+
+    terms = set(member_names)
+    for w, c in counter.items():
+        if c <= DISTINCTIVE_MAX:
+            terms.add(w)
+            terms.add(_translit_lat(w))
+
+    prefix_map = {}
+    for w in terms:
+        key = w[:3]
+        prefix_map.setdefault(key, []).append(w)
+
+    _SEARCH_INDEX = {"terms": terms, "prefix_map": prefix_map}
+    _SEARCH_INDEX_TS = now
+    return _SEARCH_INDEX
+
+
+def _reset_search_cache() -> None:
+    global _SEARCH_INDEX, _SEARCH_INDEX_TS
+    _SEARCH_INDEX = None
+    _SEARCH_INDEX_TS = 0.0
+
+
+def render_query_terms(query: str) -> List[str]:
+    """Вернуть список терминов переписки, соответствующих запросу.
+
+    Для каждого слова/хэндла/id запроса ищет совпадение среди отличительных
+    терминов экспорта (с учётом склонений и транслита).
+    """
+    q = str(query or "")
+    idx = _build_search_index()
+    prefix_map = idx["prefix_map"]
+
+    found = set()
+
+    for h in re.finditer(r"@([A-Za-z0-9_]+)", q):
+        found.add(h.group(1).lower())
+    for u in re.finditer(r"user(\d+)", q, re.IGNORECASE):
+        found.add(u.group(1))
+
+    words = [w for w in re.findall(r"[а-яёa-z]{3,}", q.lower()) if w not in _STOPWORDS]
+    for w in words:
+        # Точное совпадение с термином или его транслитом.
+        if w in idx["terms"] or _translit_lat(w) in idx["terms"]:
+            found.add(w)
+            continue
+        # Фаззи по корзине общего префикса (склонения/опечатки).
+        wl = _translit_lat(w)
+        for prefix in {w[:3], wl[:3]}:
+            bucket = prefix_map.get(prefix)
+            if not bucket:
+                continue
+            for cand in bucket[:MAX_BUCKET_CHECK]:
+                if _loose_match(w, cand):
+                    found.add(cand)
+    return sorted(found)
 
 
 def query_refers_to_chat_member(query: str) -> bool:
-    """Есть ли в запросе имя/кликуха, совпадающая с известным участником чата.
+    """Есть ли в запросе обращение к человеку/кликухе из переписки чата.
 
-    Детерминированная проверка (без AI): если среди слов запроса встречается
-    известное имя участника или кликуха этого чата — считаем, что вопрос про чат.
+    Детерминированная проверка (без AI): если какие-то слова запроса
+    соответствуют отличительным терминам экспорта (клички, имена, сленг) —
+    значит вопрос про чат и стоит искать ответ в переписке.
     """
-    q_words = set(re.findall(r"[а-яёa-z]{3,}", str(query or "").lower()))
-    if not q_words:
-        return False
-    known = _all_known_tokens()
-    # Ищем пересечение, но чтобы «лысый» не совпало случайно — только если слово
-    # действительно есть в known (кликухи/имена собраны из переписки).
-    return bool(q_words & known)
+    return bool(render_query_terms(query))
 
 
