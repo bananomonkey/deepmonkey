@@ -406,6 +406,9 @@ def _is_about_person(question: str) -> bool:
         "расскажи о", "расскажи про", "опиши", "что за", "что ты знаешь о",
         "какой он человек", "расскажи об этом пользователе", "кто этот чел",
         "что он за человек", "что за человек",
+        "кто он", "кто она", "расскажи кто", "чем занимается",
+        "кем является", "что известно", "что о нем", "что о нём",
+        "кто этот", "кто эта",
     ]
     return any(w in q for w in about_words)
 
@@ -558,9 +561,13 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
             target_name = group_sessions.member_display_name(chat_id, member_id) or uname
 
     if target_id is None:
+        logger.info("PERSONA: цель не найдена chat=%s uname=%r", chat_id, uname)
         return False
     if not _is_about_person(question):
+        logger.info("PERSONA: вопрос не о личности chat=%s target=%s q=%r", chat_id, target_id, question)
         return False
+
+    logger.info("PERSONA: вопрос о личности chat=%s target=%s name=%r q=%r", chat_id, target_id, target_name, question)
 
     await bot.send_chat_action(chat_id, ChatAction.TYPING)
 
@@ -570,6 +577,7 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
 
     # Берём до 250 сообщений из ПОЛНОЙ истории (экспорт юзербота + live).
     texts = group_sessions.get_full_member_log(chat_id, target_id, limit=250)
+    logger.info("PERSONA: найдено сообщений об участнике %s: %d", target_id, len(texts))
 
     # Если историю этого участника ещё не экспортировали (мало сообщений) —
     # пробуем сами через юзербота добрать его сообщения из чата (до вступления бота).
