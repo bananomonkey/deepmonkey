@@ -317,6 +317,12 @@ def _all_known_tokens():
             known.add(w)
         for nick in (rec.get("nicknames") or []):
             known.add(str(nick).lower())
+    # Имена участников из экспортированной истории (не зависит от построения портретов).
+    for _chat_id, messages in database.iter_member_log_all_chats():
+        for m in messages:
+            fr = str(m.get("from") or "")
+            for w in re.findall(r"[а-яёa-z]{3,}", fr.lower()):
+                known.add(w)
     # Кликухи всех чатов.
     table = database.CHAT_NICKNAMES_TABLE
     from database import _conn, init_table
