@@ -19,6 +19,8 @@ import html
 import re
 
 import config
+from chat_import import parse_chat_export_json
+import database
 from chat_sessions import chat_sessions
 from deepseek_client import (
     ask_deepseek_with_search,
@@ -282,6 +284,78 @@ async def cb_user_edit_prompt_wrong_type(message: Message) -> None:
     await message.answer(
         "⚠️ Пришлите промпт текстовым сообщением.",
         reply_markup=user_prompt_cancel_kb(),
+    )
+
+
+@router.message(F.document, F.chat.type == "private")
+async def handle_chat_export_document(message: Message) -> None:
+    """Приём файла экспорта чата (JSON от плагина ChatExport) в ЛС от админа.
+
+    Парсит JSON, сохраняет сообщения в member_log_all по chat_id. После этого
+    запросы 'кто такой @X' строятся по этой истории (даже до вступления бота).
+    """
+    if message.from_user.id != config.ADMIN_ID:
+        return
+
+    doc = message.document
+    if not doc:
+        return
+
+    fname = (doc.file_name or "").lower()
+    if not fname.endswith((".json", ".txt")):
+        await message.answer("Прикрепите файл экспорта чата в формате <b>.json</b>.")
+        return
+
+    await message.answer("⏳ Читаю файл экспорта...")
+
+    try:
+        bot_file = await message.bot.get_file(doc.file_id)
+        raw = (await message.bot.download_file(bot_file)).read()
+    except Exception as e:
+        logger.error("Не удалось скачать файл экспорта: %s", e)
+        await message.answer("⚠️ Не удалось скачать файл.")
+        return
+
+    try:
+        text = raw.decode("utf-8-sig", errors="replace")
+    except Exception as e:
+        await message.answer(f"⚠️ Не удалось декодировать файл: {e}")
+        return
+
+    try:
+        parsed = parse_chat_export_json(text)
+    except ValueError as e:
+        await message.answer(f"⚠️ Ошибка в файле: {e}")
+        return
+
+    chat_id = parsed["chat_id"]
+    msgs = parsed["messages"]
+    if chat_id is None:
+        await message.answer("⚠️ В JSON не найден dialog_id (id чата).")
+        return
+
+    # В экспорте плагина нет username, но он есть в live-логе группы.
+    # Сопоставляем по user_id, чтобы потом находить людей по @username.
+    uname_to_uid = group_sessions.get_member_username_map(chat_id)
+    uid_to_uname = {str(uid): un for un, uid in uname_to_uid.items()}
+    for m in msgs:
+        if not m.get("username"):
+            m["username"] = uid_to_uname.get(str(m.get("user_id")))
+
+    try:
+        database.save_exported_messages(chat_id, msgs)
+    except Exception as e:
+        logger.error("Не удалось сохранить экспорт в БД: %s", e)
+        await message.answer(f"⚠️ Не удалось сохранить в базу: {e}")
+        return
+
+    matched = sum(1 for m in msgs if m.get("username"))
+    await message.answer(
+        f"✅ Экспорт чата <b>{parsed['chat_name'] or chat_id}</b> принят.\n"
+        f"Сообщений с текстом: <b>{len(msgs)}</b>\n"
+        f"Привязано по username: <b>{matched}</b>\n"
+        f"Chat ID: <code>{chat_id}</code>\n\n"
+        f"Теперь спросите: <code>@имя_бота кто такой @юзернейм</code>"
     )
 
 

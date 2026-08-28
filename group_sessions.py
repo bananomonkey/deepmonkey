@@ -161,6 +161,19 @@ class GroupChatSessions:
         """
         return [t for t in database.find_member_globally(username, limit=limit) if t]
 
+    def get_member_username_map(self, chat_id: int) -> Dict[str, int]:
+        """{username: user_id} из live-лога чата (для сопоставления после импорта).
+        """
+        rec = self._data.get(str(chat_id))
+        result: Dict[str, int] = {}
+        if not rec:
+            return result
+        for m in rec.get("member_log", []):
+            mu = m.get("username")
+            if mu and m.get("user_id") is not None:
+                result.setdefault(str(mu).lower(), int(m["user_id"]))
+        return result
+
     def get_member_profile(self, chat_id: int, user_id: int) -> str:
         rec = self._data.get(str(chat_id))
         if not rec:
