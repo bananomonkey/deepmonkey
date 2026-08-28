@@ -42,7 +42,7 @@ from prompt_manager import build_full_system_prompt
 from rate_limiter import rate_limiter
 from reply_context_store import reply_context_store
 from states import UserStates
-from user_settings import user_settings
+from user_settings import MODEL_MAP, user_settings
 from user_storage import user_storage
 
 logger = logging.getLogger(__name__)
@@ -410,7 +410,7 @@ async def handle_photo_pm(message: Message, bot: Bot) -> None:
 
     # Для фото всегда используем vision-модель (не текущую текстовую),
     # и не включаем thinking (см. deepseek_client).
-    model_id = user_settings.MODEL_MAP["vision"]
+    model_id = MODEL_MAP["vision"]
     use_thinking = False
 
     try:
@@ -449,6 +449,9 @@ async def handle_text(message: Message, bot: Bot) -> None:
     system_prompt = build_full_system_prompt(profile, user_custom_prompt)
     history = chat_sessions.get_history(user_id)
 
+    # Если вопрос про людей/содержимое чата (кликухи, мемы) — ищем в экспорте.
+    chat_context = await _maybe_chat_context(message.text)
+
     model_id = user_settings.get_model_id(user_id)
     use_thinking = user_settings.use_thinking(user_id)
 
@@ -456,6 +459,7 @@ async def handle_text(message: Message, bot: Bot) -> None:
         answer = await ask_deepseek_with_search(
             system_prompt, message.text, history=history,
             model=model_id, use_thinking=use_thinking,
+            chat_context=chat_context,
         )
     except Exception as e:
         logger.error("Необработанная ошибка в handle_text: %s", e)
@@ -846,8 +850,21 @@ INLINE_DEEPSEEK_TIMEOUT = 90
 
 async def _maybe_chat_context(query_text: str, chat_id=None) -> str:
     """Если вопрос явно про людей/содержимое чата — вернуть релевантный отрывок
-    переписки из экспорта (иначе пустую строку)."""
+    переписки из экспорта (иначе пустую строку).
+
+    Сначала проверяем по известным именам/кликухам участников (детерминированно,
+    без лишнего AI-запроса), затем при необходимости — AI-решением.
+    """
     try:
+        # Детерминированная проверка: есть ли в запросе имя/кликуха из базы.
+        if member_knowledge.query_refers_to_chat_member(query_text):
+            ctx = member_knowledge.search_exported_messages(
+                query_text, chat_id=chat_id, limit=15
+            )
+            if ctx:
+                logger.info("CHAT_SEARCH: имя/кликуха по запросу %r (chars=%d)", query_text[:80], len(ctx))
+            return ctx
+
         if not await member_knowledge.ai_decides_chat_search(query_text):
             return ""
         ctx = member_knowledge.search_exported_messages(

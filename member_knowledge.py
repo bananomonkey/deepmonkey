@@ -5,6 +5,7 @@
 локальные мемы и обращался к людям по именам/кличкам.
 """
 import asyncio
+import json
 import logging
 import re
 from typing import Dict, List, Optional
@@ -303,4 +304,49 @@ def _query_tokens(query: str) -> List[str]:
         tokens.add(w)
     tokens.discard("")
     return sorted(tokens)
+
+
+def _all_known_tokens():
+    """Все известные имена участников и кликухи чатов (для детерминированной
+    проверки, относится ли запрос к людям из чата)."""
+    known = set()
+    knowledge = database.load_member_knowledge()
+    for uid, rec in knowledge.items():
+        name = rec.get("name") or ""
+        for w in re.findall(r"[а-яёa-z]{3,}", str(name).lower()):
+            known.add(w)
+        for nick in (rec.get("nicknames") or []):
+            known.add(str(nick).lower())
+    # Кликухи всех чатов.
+    table = database.CHAT_NICKNAMES_TABLE
+    from database import _conn, init_table
+    init_table(table)
+    conn = _conn()
+    try:
+        for _key, value in conn.execute(f"SELECT key, value FROM {table}"):
+            try:
+                nicks = json.loads(value)
+            except Exception:
+                nicks = []
+            for nick in (nicks if isinstance(nicks, list) else []):
+                known.add(str(nick).lower())
+    finally:
+        conn.close()
+    return known
+
+
+def query_refers_to_chat_member(query: str) -> bool:
+    """Есть ли в запросе имя/кликуха, совпадающая с известным участником чата.
+
+    Детерминированная проверка (без AI): если среди слов запроса встречается
+    известное имя участника или кликуха этого чата — считаем, что вопрос про чат.
+    """
+    q_words = set(re.findall(r"[а-яёa-z]{3,}", str(query or "").lower()))
+    if not q_words:
+        return False
+    known = _all_known_tokens()
+    # Ищем пересечение, но чтобы «лысый» не совпало случайно — только если слово
+    # действительно есть в known (кликухи/имена собраны из переписки).
+    return bool(q_words & known)
+
 

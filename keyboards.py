@@ -22,6 +22,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=multimodal_label, callback_data="admin_toggle_multimodal")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
             [InlineKeyboardButton(text="👥 Пользователи в базе", callback_data="admin_view_users")],
+            [InlineKeyboardButton(text="💬 Сообщения пользователя в ЛС", callback_data="admin_view_user_messages")],
             [InlineKeyboardButton(text="✉️ Написать пользователю", callback_data="admin_direct_message")],
             [InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="🚫 Забанить пользователя", callback_data="admin_ban_user")],

@@ -248,6 +248,50 @@ async def view_profile_finish(message: Message, state: FSMContext) -> None:
 
 
 # ============================================================
+#  Просмотр ЛС-переписки пользователя с ботом
+# ============================================================
+
+@router.callback_query(F.data == "admin_view_user_messages")
+async def view_user_messages_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminStates.waiting_for_view_messages_user_id)
+    await callback.message.answer(
+        "Введите Telegram ID пользователя, чью переписку в ЛС с ботом хотите посмотреть.\n"
+        "(ID можно узнать через @userinfobot)",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_for_view_messages_user_id, F.text)
+async def view_user_messages_finish(message: Message, state: FSMContext) -> None:
+    import chat_sessions
+
+    text = message.text.strip()
+    await state.clear()
+
+    if not text.lstrip("-").isdigit():
+        await message.answer("⚠️ ID должен быть числом.", reply_markup=admin_menu_kb())
+        return
+
+    user_id = int(text)
+    history = chat_sessions.get_history(user_id)
+    if not history:
+        await message.answer("У этого пользователя нет активной ЛС-переписки с ботом.", reply_markup=admin_menu_kb())
+        return
+
+    chat_name = chat_sessions.get_active_chat_name(user_id)
+    lines = [f"💬 <b>ЛС-переписка с @{message.from_user.username or 'вы'}:</b>\n", f"Чат: {chat_name}\n"]
+    for entry in history[-30:]:
+        role = "👤" if entry.get("role") == "user" else "🤖"
+        content = str(entry.get("content", ""))[:1500]
+        lines.append(f"<b>{role}</b> {content}\n")
+
+    await message.answer("\n".join(lines), reply_markup=admin_menu_kb())
+    logger.info("Администратор %s посмотрел ЛС-переписку пользователя %s", message.from_user.id, user_id)
+
+
+
+# ============================================================
 #  Личное сообщение конкретному пользователю
 # ============================================================
 
