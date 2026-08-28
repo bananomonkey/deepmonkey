@@ -177,6 +177,18 @@ class GroupChatSessions:
         """Сохранить портрет по @username в кэш, чтобы не тратить токены повторно."""
         if personality:
             database.set_personality_cache(username, personality, message_count)
+
+    def member_display_name_global(self, user_id) -> str:
+        """Отображаемое имя участника по user_id во всех экспортированных чатах."""
+        uname = database.get_member_log_all_for_user_global(user_id, limit=1)
+        # uname содержит тексты, нужно имя — ищем напрямую в member_log_all.
+        for _chat_id, messages in database.iter_member_log_all_chats():
+            for m in messages:
+                if str(m.get("user_id")) == str(user_id):
+                    n = m.get("name") or m.get("username")
+                    if n:
+                        return str(n)
+        return str(user_id)
         
     def _resolve_global_user_id(self, username: str) -> Optional[int]:
         """Найти user_id по @username во всех live-логах групп (обобщённо).

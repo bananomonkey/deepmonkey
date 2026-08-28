@@ -1063,37 +1063,68 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
 async def _try_global_personality(query_text: str, bot_username: str) -> str | None:
     """Попытка ответить на 'кто такой @X' из базы (экспорт юзербота) в инлайн-пути.
 
-    Ищем сообщения участника по @username во ВСЕХ чатах, собранных юзерботом.
-    Если данных достаточно — возвращаем портрет из базы (БЕЗ интернет-поиска,
-    markdown). Если данных нет — вернём None и пойдёт обычный путь.
+    Ищем сообщения участника по @username ИЛИ по user_id (user123 или 123) во ВСЕХ
+    чатах, собранных юзерботом. Если данных достаточно — возвращаем портрет из базы
+    (БЕЗ интернет-поиска, markdown). Если данных нет — вернём None и пойдёт обычный путь.
     """
     if not _is_about_person(query_text):
         return None
-    uname = _extract_username(query_text)
-    if not uname:
+
+    # Определяем идентификатор: @username или user_id (user8065762277 / 8065762277).
+    ident = _extract_identifier(query_text)
+    if not ident:
         return None
-    if uname.lower() == (bot_username or "").lower():
+    key, is_id = ident
+    if not is_id and key.lower() == (bot_username or "").lower():
         return None
+
     # Кэш: если портрет уже составлен — отдаём его, не тратя токены.
-    cached = group_sessions.get_cached_personality(uname)
+    cached = group_sessions.get_cached_personality(key)
     if cached is not None:
-        logger.info("GLOBAL_PERSONA: портрет @%s из кэша (сообщений: %s)", uname, cached.get("message_count"))
+        logger.info("GLOBAL_PERSONA: портрет %s из кэша (сообщений: %s)", key, cached.get("message_count"))
         return cached["personality"]
-    texts = group_sessions.get_global_member_log(uname, limit=300)
+
+    if is_id:
+        texts = database.get_member_log_all_for_user_global(key, limit=300)
+        display = group_sessions.member_display_name_global(key)
+    else:
+        texts = group_sessions.get_global_member_log(key, limit=300)
+        display = f"@{key}"
+
     if len(texts) < 15:
-        # Это запрос о личности участника чата, но по нему нет данных в базе.
-        # Возвращаем понятный ответ вместо бессмысленного веб-поиска по @username.
-        logger.info("GLOBAL_PERSONA: нет данных по @%s (%d сообщений)", uname, len(texts))
+        logger.info("GLOBAL_PERSONA: нет данных по %s (%d сообщений)", key, len(texts))
         return (
-            f"По участнику <code>@{uname}</code> пока недостаточно сведений, чтобы "
-            "составить портрет — в базе меньше 15 его сообщений. Пусть он напишет "
-            "в чат, и я соберу его описание.\n\n"
+            f"По участнику <code>{display or key}</code> пока недостаточно сведений, "
+            "чтобы составить портрет — в базе меньше 15 его сообщений. Пусть он "
+            "напишет в чат, и я соберу его описание.\n\n"
             f"Нашёл сообщений: {len(texts)}."
         )
-    logger.info("GLOBAL_PERSONA: %s сообщений для @%s (из базы, без интернет-поиска)", len(texts), uname)
-    portrait = await describe_personality(f"@{uname}", texts[-200:])
-    group_sessions.set_cached_personality(uname, portrait, len(texts))
+    logger.info("GLOBAL_PERSONA: %s сообщений для %s (из базы, без интернет-поиска)", len(texts), key)
+    portrait = await describe_personality(display or key, texts[-200:])
+    group_sessions.set_cached_personality(key, portrait, len(texts))
     return portrait
+
+
+def _extract_identifier(text: str):
+    """Извлечь из запроса идентификатор участника.
+
+    Возвращает (ключ, is_id) где:
+      - @username  → ("username", False)
+      - user8065.. → ("8065..", True)
+      - 8065..     → ("8065..", True)
+    Или None, если идентификатора нет.
+    """
+    t = text or ""
+    m = re.search(r"user(\d{5,})", t, re.IGNORECASE)
+    if m:
+        return m.group(1), True
+    m = re.search(r"@([A-Za-z0-9_]{4,})", t)
+    if m:
+        return m.group(1), False
+    m = re.search(r"(?<![@\d])(\d{7,})", t)
+    if m:
+        return m.group(1), True
+    return None
 
 
 def _extract_username(text: str) -> str | None:
