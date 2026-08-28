@@ -159,7 +159,29 @@ class GroupChatSessions:
 
         Для инлайн-запросов 'кто такой @X', когда неизвестен чат.
         """
-        return [t for t in database.find_member_globally(username, limit=limit) if t]
+        texts = [t for t in database.find_member_globally(username, limit=limit) if t]
+        if texts:
+            return texts
+        # Если в экспорте username не заполнен (Telegram Desktop JSON), ищем user_id
+        # по live-логу (участники, писавшие при боте) и собираем по нему тексты.
+        user_id = self._resolve_global_user_id(username)
+        if user_id is not None:
+            return [t for t in database.get_member_log_all_for_user_global(user_id, limit=limit) if t]
+        return []
+
+    def _resolve_global_user_id(self, username: str) -> Optional[int]:
+        """Найти user_id по @username во всех live-логах групп (обобщённо).
+
+        Используется, когда в экспортированной истории username не заполнен,
+        но участник хоть раз писал при работающем боте.
+        """
+        uname = str(username).lower().lstrip("@")
+        for _cid, rec in self._data.items():
+            for m in rec.get("member_log", []):
+                mu = m.get("username")
+                if mu and str(mu).lower().lstrip("@") == uname and m.get("user_id") is not None:
+                    return int(m["user_id"])
+        return None
 
     def get_member_username_map(self, chat_id: int) -> Dict[str, int]:
         """{username: user_id} из live-лога чата (для сопоставления после импорта).

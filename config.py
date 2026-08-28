@@ -35,6 +35,10 @@ USERBOT_EXPORT_DELAY = float(os.getenv("USERBOT_EXPORT_DELAY", "1.0"))
 # Локально можно переопределить через env DB_FILE_PATH, например data/bot.db
 DB_FILE_PATH = os.getenv("DB_FILE_PATH", "/app/data/bot.db")
 
+# Папка с файлами экспорта чатов (Telegram Desktop JSON), которые бот
+# сканирует и импортирует в базу. По умолчанию — рядом с БД (/app/data).
+IMPORT_EXPORT_DIR = os.getenv("IMPORT_EXPORT_DIR", os.path.dirname(os.getenv("DB_FILE_PATH", "/app/data/bot.db")) or "/app/data")
+
 # Пауза между сообщениями при массовой рассылке (защита от лимитов Telegram)
 BROADCAST_DELAY_SECONDS = float(os.getenv("BROADCAST_DELAY_SECONDS", "0.05"))
 

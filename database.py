@@ -163,6 +163,18 @@ def find_member_globally(username: str, limit: int = 300) -> list:
     return collected[-limit:]
 
 
+def get_member_log_all_for_user_global(user_id, limit: int = 300) -> list:
+    """Сообщения участника по user_id во ВСЕХ чатах экспортированной истории."""
+    collected = []
+    for _chat_id, messages in iter_member_log_all_chats():
+        for m in messages:
+            if str(m.get("user_id")) == str(user_id):
+                text = (m.get("text") or "").strip()
+                if text:
+                    collected.append(text)
+    return collected[-limit:]
+
+
 
 def diagnose() -> str:
     """Человекочитаемая сводка о состоянии БД — для стартовых логов."""

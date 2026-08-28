@@ -94,6 +94,20 @@ async def main() -> None:
             "Добавьте TAVILY_API_KEY в .env для надёжного поиска."
         )
 
+    # Автоимпорт файлов экспорта чатов из IMPORT_EXPORT_DIR (например /app/data).
+    # Держит базу портретов актуальной без ручного запуска /loadchat.
+    try:
+        from chat_import import import_export_dir
+        summary = await asyncio.to_thread(import_export_dir, config.IMPORT_EXPORT_DIR)
+        if summary["imported"]:
+            logger.info("Автоимпорт экспортов: импортировано %d файлов", summary["imported"])
+            for fname, info in summary["files"].items():
+                logger.info("  • %s → чат %s (%d сообщений)", fname, info["chat_id"], info["messages"])
+        if summary["errors"]:
+            logger.warning("Автоимпорт: %s", "; ".join(summary["errors"]))
+    except Exception as e:
+        logger.warning("Автоимпорт экспортов не выполнился: %s", e)
+
     await dp.start_polling(bot, allowed_updates=allowed)
 
 

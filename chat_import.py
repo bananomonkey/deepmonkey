@@ -32,11 +32,63 @@ chat_import.py — импорт экспортированного чата (JSO
    }
 """
 
+import gzip
+import glob
 import json
 import logging
+import os
 from typing import List, Dict, Optional
 
+import config
+import database
+
 logger = logging.getLogger(__name__)
+
+
+def _read_file_bytes(path: str) -> bytes:
+    """Прочитать файл (поддержка gzip по расширению)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if path.lower().endswith(".gz"):
+        data = gzip.decompress(data)
+    return data
+
+
+def import_export_dir(directory: str) -> Dict:
+    """Просканировать папку и импортировать все файлы экспорта чатов.
+
+    Возвращает сводку: {"imported": n, "file": {"chat_id": msgs}, "errors": [...]}.
+    """
+    summary = {"imported": 0, "files": {}, "errors": []}
+    if not directory or not os.path.isdir(directory):
+        summary["errors"].append(f"Папка не найдена: {directory}")
+        return summary
+
+    patterns = ["*.json", "*.txt", "*.json.gz", "*.txt.gz"]
+    seen = set()
+    for pat in patterns:
+        for path in glob.glob(os.path.join(directory, pat)):
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                raw = _read_file_bytes(path).decode("utf-8-sig", errors="replace")
+                parsed = parse_chat_export_json(raw)
+                chat_id = parsed["chat_id"]
+                msgs = parsed["messages"]
+                if chat_id is None or not msgs:
+                    summary["errors"].append(f"{os.path.basename(path)}: нет сообщений или chat_id")
+                    continue
+                database.save_exported_messages(chat_id, msgs)
+                summary["imported"] += 1
+                summary["files"][os.path.basename(path)] = {"chat_id": chat_id, "messages": len(msgs)}
+                logger.info("Импортирован экспорт %s (chat %s): %d сообщений",
+                            os.path.basename(path), chat_id, len(msgs))
+            except Exception as e:
+                logger.error("Не удалось импортировать %s: %s", os.path.basename(path), e)
+                summary["errors"].append(f"{os.path.basename(path)}: {e}")
+    return summary
+
 
 
 def _extract_text(raw) -> str:

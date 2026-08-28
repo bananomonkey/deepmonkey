@@ -570,3 +570,28 @@ async def cmd_export_user(message: Message) -> None:
     limit = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 500
     await message.answer(f"⏳ Запускаю экспорт участника {user} из чата {chat} (до {limit})…")
     asyncio.create_task(_run_userbot_export(chat, user, limit, message))
+
+
+@router.message(Command("loadchat"))
+async def cmd_loadchat(message: Message) -> None:
+    """Импортировать файлы экспорта чатов из папки IMPORT_EXPORT_DIR (/app/data)."""
+    from chat_import import import_export_dir
+
+    directory = config.IMPORT_EXPORT_DIR
+    await message.answer(f"⏳ Сканирую папку <code>{directory}</code>…")
+
+    summary = await asyncio.to_thread(import_export_dir, directory)
+
+    lines = [f"📁 {directory}"]
+    lines.append(f"Импортировано файлов: <b>{summary['imported']}</b>")
+    if summary["files"]:
+        lines.append("")
+        for fname, info in summary["files"].items():
+            lines.append(f"• {fname}: чат <code>{info['chat_id']}</code>, {info['messages']} сообщений")
+    if summary["errors"]:
+        lines.append("")
+        lines.append("Ошибки:")
+        for err in summary["errors"][:20]:
+            lines.append(f"⚠️ {err}")
+
+    await message.answer("\n".join(lines))
