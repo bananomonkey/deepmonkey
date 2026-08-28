@@ -485,6 +485,14 @@ def _is_reply_to_bot(message: Message, bot: Bot) -> bool:
     )
 
 
+def _bot_username(bot: Bot) -> str:
+    """Username бота (без @). bot.me заполняется get_me() при старте."""
+    try:
+        return getattr(bot.me, "username", "") or ""
+    except Exception:
+        return ""
+
+
 def _is_bot_mentioned(message: Message, bot: Bot) -> bool:
     text = message.text or message.caption or ""
     entities = message.entities or message.caption_entities or []
@@ -493,7 +501,7 @@ def _is_bot_mentioned(message: Message, bot: Bot) -> bool:
             return True
         if e.type == MessageEntityType.MENTION:
             mention = text[e.offset:e.offset + e.length]
-            if mention.lstrip("@") == bot.username:
+            if mention.lstrip("@") == _bot_username(bot):
                 return True
     return False
 
@@ -518,7 +526,7 @@ def _mentioned_username(message: Message, bot: Bot) -> str | None:
         if e.type == MessageEntityType.MENTION:
             mention = text[e.offset:e.offset + e.length]
             uname = mention.lstrip("@")
-            if uname.lower() != (bot.username or "").lower() and uname:
+            if uname.lower() != (_bot_username(bot) or "").lower() and uname:
                 return uname
         if e.type == MessageEntityType.TEXT_MENTION:
             if e.user and e.user.id != bot.id:
@@ -1022,7 +1030,7 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
 
     await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
 
-    answer = await _get_ai_answer(user_id, query_text, bot.username)
+    answer = await _get_ai_answer(user_id, query_text, _bot_username(bot))
 
     if is_private:
         # ЛС-гость: шлём обычное сообщение (как в handle_text), сохраняем контекст чата.
@@ -1098,7 +1106,7 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
     except Exception:
         pass
 
-    answer = await _get_ai_answer(user_id, query_text, bot.username)
+    answer = await _get_ai_answer(user_id, query_text, _bot_username(bot))
 
     # --- Облёгчённый typewriter + обязательный финальный edit с retry при flood ---
     # Telegram жёстко лимитирует editMessageText (~1/сек на чат). Частые edit
