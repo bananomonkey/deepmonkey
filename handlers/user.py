@@ -317,7 +317,7 @@ async def handle_chat_export_document(message: Message) -> None:
 
     try:
         bot_file = await message.bot.get_file(doc.file_id)
-        raw = (await message.bot.download_file(bot_file)).read()
+        raw = (await message.bot.download_file(bot_file.file_path)).read()
     except Exception as e:
         logger.error("Не удалось скачать файл экспорта: %s", e)
         await message.answer("⚠️ Не удалось скачать файл.")
@@ -392,7 +392,7 @@ async def handle_photo_pm(message: Message, bot: Bot) -> None:
     photo = message.photo[-1]
     try:
         file = await bot.get_file(photo.file_id)
-        data = (await bot.download_file(file)).read()
+        data = (await bot.download_file(file.file_path)).read()
         import base64
         data_url = "data:image/jpeg;base64," + base64.b64encode(data).decode()
     except Exception as e:
@@ -407,8 +407,10 @@ async def handle_photo_pm(message: Message, bot: Bot) -> None:
     system_prompt = build_full_system_prompt(profile, user_custom_prompt)
     history = chat_sessions.get_history(user_id)
 
-    model_id = user_settings.get_model_id(user_id)
-    use_thinking = user_settings.use_thinking(user_id)
+    # Для фото всегда используем vision-модель (не текущую текстовую),
+    # и не включаем thinking (см. deepseek_client).
+    model_id = user_settings.MODEL_MAP["vision"]
+    use_thinking = False
 
     try:
         answer = await ask_deepseek_with_search(

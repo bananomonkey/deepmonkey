@@ -239,7 +239,9 @@ async def ask_deepseek(
             "messages": messages,
             "timeout": 60,
         }
-        if use_thinking:
+        # При мультимодальных запросах (картинки) не добавляем thinking extra_body —
+        # vision-модели/прокси часто его не принимают вместе с image_url.
+        if use_thinking and not images:
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
 
         response = await client.chat.completions.create(**kwargs)
