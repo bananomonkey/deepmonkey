@@ -259,10 +259,13 @@ async def ask_deepseek_with_search(
     model: Optional[str] = None,
     use_thinking: bool = False,
     images: Optional[List[str]] = None,
+    chat_context: Optional[str] = None,
 ) -> str:
-    # При наличии изображений веб-поиск не запускаем (это анализ картинки).
+    # Если есть контекст из истории чата — берём его, веб-поиск не запускаем.
     search_context = ""
-    if not images:
+    if chat_context:
+        search_context = chat_context
+    elif not images:
         search_query = await _ai_decides_search(user_text, model=model)
         if search_query:
             search_context = await web_search(search_query)
@@ -270,9 +273,8 @@ async def ask_deepseek_with_search(
     if search_context:
         user_text = (
             user_text
-            + "\n\n[Результаты веб-поиска по этому запросу. "
-            "ОБЯЗАТЕЛЬНО используй эти данные для ответа, "
-            "перескажи своими словами со ссылками на источники]:\n"
+            + "\n\n[Контекст из истории/поиска. ОБЯЗАТЕЛЬНО используй эти данные "
+            "для ответа, перескажи своими словами со ссылками на источники]:\n"
             + search_context
         )
 

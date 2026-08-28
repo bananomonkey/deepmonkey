@@ -108,6 +108,15 @@ async def main() -> None:
     except Exception as e:
         logger.warning("Автоимпорт экспортов не выполнился: %s", e)
 
+    # Строим базу знаний об участниках (портреты активных + кликухи чатов).
+    # В фоне, чтобы не задерживать старт; пересобирает только новые/устаревшие.
+    try:
+        import member_knowledge
+        asyncio.create_task(member_knowledge.build_member_knowledge())
+        logger.info("Запущено фоновое построение базы знаний об участниках")
+    except Exception as e:
+        logger.warning("Не удалось запустить построение базы знаний: %s", e)
+
     await dp.start_polling(bot, allowed_updates=allowed)
 
 

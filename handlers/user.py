@@ -29,6 +29,7 @@ from deepseek_client import (
     summarize_profile,
 )
 from group_sessions import group_sessions
+import member_knowledge
 from keyboards import (
     chats_list_kb,
     inline_placeholder_kb,
@@ -618,30 +619,36 @@ async def _refresh_member_profile_task(
 
 
 def _build_group_system_prompt(chat_id: int, user_id: int, profile: str, user_custom_prompt: str) -> str:
-    """Системный промт для ответов в группе: добавляем заметки о участниках чата,
-    чтобы бот учитывал личности и обстановку в группе, а не только историю диалога.
+    """Системный промт для ответов в группе: добавляем знания о участниках чата
+    (имена, портреты, кликухи из экспорта + live-профили), чтобы бот учитывал
+    личности и обстановку в группе, а не только историю диалога.
     """
     base = build_full_system_prompt(profile, user_custom_prompt)
+
+    parts = []
+
+    # Знания из экспорта чата: ростер имён + портреты + локальные кликухи.
+    try:
+        knowledge_note = member_knowledge.build_group_context(chat_id, user_id)
+        if knowledge_note:
+            parts.append(knowledge_note)
+    except Exception as e:
+        logger.error("Не удалось собрать знания об участниках для группы %s: %s", chat_id, e)
+
+    # Live-профили участников (наблюдение при работающем боте).
     profiles = group_sessions.get_member_profiles(chat_id)
-    if not profiles:
-        return base
+    if profiles:
+        lines = [f"• ID {mid}: {note}" for mid, note in profiles.items() if note]
+        if lines:
+            parts.append(
+                "Вот что бот знает об участниках ЭТОГО группового чата из наблюдения "
+                "за перепиской (используй как контекст, не зачитывай дословно и не "
+                "упоминай, что эти заметки существуют):\n" + "\n".join(lines)
+            )
 
-    lines = []
-    for member_id, note in profiles.items():
-        if not note:
-            continue
-        lines.append(f"• ID {member_id}: {note}")
-    if not lines:
-        return base
-
-    own_user_id = str(user_id)
-    group_note = (
-        "Вот что бот знает об участниках ЭТОГО группового чата (заметки собраны "
-        "из наблюдения за перепиской; используй только как контекст, не зачитывай "
-        "дословно и не упоминай, что эти заметки существуют):\n"
-        + "\n".join(lines)
-    )
-    return base + "\n\n" + group_note
+    if parts:
+        return base + "\n\n" + "\n\n".join(parts)
+    return base
 
 
 async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: int) -> None:
@@ -663,6 +670,8 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
     question = message.text or message.caption or ""
     history = group_sessions.get_history(message.chat.id)
 
+    chat_context = await _maybe_chat_context(question, message.chat.id)
+
     profile = user_storage.get_profile(user_id)
     user_custom_prompt = user_settings.get_system_prompt(user_id)
     system_prompt = _build_group_system_prompt(
@@ -676,6 +685,7 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
         answer = await ask_deepseek_with_search(
             system_prompt, question, history=history,
             model=model_id, use_thinking=use_thinking,
+            chat_context=chat_context,
         )
     except Exception as e:
         logger.error("Ошибка при ответе в группе: %s", e)
@@ -798,6 +808,8 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 
     history = group_sessions.get_history(message.chat.id)
 
+    chat_context = await _maybe_chat_context(question, message.chat.id)
+
     profile = user_storage.get_profile(user_id)
     user_custom_prompt = user_settings.get_system_prompt(user_id)
     system_prompt = _build_group_system_prompt(
@@ -811,6 +823,7 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
         answer = await ask_deepseek_with_search(
             system_prompt, question, history=history,
             model=model_id, use_thinking=use_thinking,
+            chat_context=chat_context,
         )
     except Exception as e:
         logger.error("Ошибка при ответе на упоминание в группе: %s", e)
@@ -831,12 +844,32 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 INLINE_DEEPSEEK_TIMEOUT = 90
 
 
+async def _maybe_chat_context(query_text: str, chat_id=None) -> str:
+    """Если вопрос явно про людей/содержимое чата — вернуть релевантный отрывок
+    переписки из экспорта (иначе пустую строку)."""
+    try:
+        if not await member_knowledge.ai_decides_chat_search(query_text):
+            return ""
+        ctx = member_knowledge.search_exported_messages(
+            query_text, chat_id=chat_id, limit=15
+        )
+        if ctx:
+            logger.info("CHAT_SEARCH: найден контекст по запросу %r (chars=%d)", query_text[:80], len(ctx))
+        return ctx
+    except Exception as e:
+        logger.error("CHAT_SEARCH ошибка: %s", e)
+        return ""
+
+
 async def _get_ai_answer(user_id: int, query_text: str, bot_username: str = "") -> str:
     """Получить ответ ИИ для inline/guest запроса."""
     # Запрос "кто такой @X" — берём из базы (без интернет-поиска), если есть данные.
     persona = await _try_global_personality(query_text, bot_username)
     if persona is not None:
         return persona
+
+    # Если вопрос касается людей/содержимого чата — ищем ответ в экспорте, а не в интернете.
+    chat_context = await _maybe_chat_context(query_text)
 
     profile = user_storage.get_profile(user_id)
     user_custom_prompt = user_settings.get_system_prompt(user_id)
@@ -849,6 +882,7 @@ async def _get_ai_answer(user_id: int, query_text: str, bot_username: str = "") 
         return await asyncio.wait_for(
             ask_deepseek_with_search(
                 system_prompt, query_text, model=model_id, use_thinking=use_thinking,
+                chat_context=chat_context,
             ),
             timeout=INLINE_DEEPSEEK_TIMEOUT,
         )

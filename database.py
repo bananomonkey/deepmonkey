@@ -133,6 +133,53 @@ def set_personality_cache(username: str, personality: str, message_count: int) -
     )
 
 
+# --- База знаний об участниках (имена + портреты + кликухи) ---
+# Ключ = user_id, value = {"name": str, "portrait": str, "nicknames": [str],
+# "message_count": int, "updated": float}. Используется для встраивания
+# информации о людях в контекст групповых ответов.
+MEMBER_KNOWLEDGE_TABLE = "member_knowledge"
+
+
+def load_member_knowledge() -> Dict[str, dict]:
+    """Загрузить всю базу знаний об участниках {user_id: record}."""
+    return load_table(MEMBER_KNOWLEDGE_TABLE)
+
+
+def get_member_knowledge(user_id) -> dict | None:
+    """Портрет/знания об участнике по user_id (или None)."""
+    val = get_value(MEMBER_KNOWLEDGE_TABLE, str(user_id))
+    return val if isinstance(val, dict) else None
+
+
+def set_member_knowledge(user_id, name: str, portrait: str, nicknames: list, message_count: int) -> None:
+    """Сохранить/обновить знания об участнике в базе."""
+    upsert(
+        MEMBER_KNOWLEDGE_TABLE,
+        str(user_id),
+        {
+            "name": name or str(user_id),
+            "portrait": portrait,
+            "nicknames": nicknames or [],
+            "message_count": int(message_count),
+            "updated": time.time(),
+        },
+    )
+
+
+# --- Локальные кликухи/сленг чата (для понимания мемов) ---
+# Ключ = chat_id, value = [nickname, ...] — частые короткие слова чата.
+CHAT_NICKNAMES_TABLE = "chat_nicknames"
+
+
+def get_chat_nicknames(chat_id) -> list:
+    val = get_value(CHAT_NICKNAMES_TABLE, str(chat_id))
+    return val if isinstance(val, list) else []
+
+
+def set_chat_nicknames(chat_id, nicknames: list) -> None:
+    upsert(CHAT_NICKNAMES_TABLE, str(chat_id), nicknames or [])
+
+
 def load_member_log_all(chat_id: int) -> list:
     """Вернуть экспортированную историю сообщений чата (или [])."""
     val = get_value(MEMBER_LOG_ALL_TABLE, str(chat_id))

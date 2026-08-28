@@ -609,3 +609,34 @@ async def cmd_loadchat(message: Message) -> None:
             lines.append(f"⚠️ {err}")
 
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("learn"))
+async def cmd_learn(message: Message) -> None:
+    """Собрать/обновить базу знаний об участниках из экспортированной истории.
+
+    Строит портреты активных участников и собирает локальные кликухи чатов,
+    чтобы бот знал имена и понимал местные мемы при ответах в группах.
+    """
+    import member_knowledge
+    await message.answer("⏳ Изучаю историю чатов и строю портреты участников…")
+    try:
+        knowledge = await member_knowledge.build_member_knowledge()
+    except Exception as e:
+        logger.error("Ошибка при построении базы знаний: %s", e)
+        await message.answer(f"⚠️ Не удалось построить базу знаний: {e}")
+        return
+
+    total = len(knowledge)
+    lines = [f"✅ База знаний обновлена. Участников: <b>{total}</b>"]
+    # Топ-участников по числу сообщений.
+    ranked = sorted(
+        (rec for rec in knowledge.values()),
+        key=lambda r: r.get("message_count", 0),
+        reverse=True,
+    )
+    for rec in ranked[:10]:
+        name = rec.get("name") or "?"
+        cnt = rec.get("message_count", 0)
+        lines.append(f"• {name}: {cnt} сообщений")
+    await message.answer("\n".join(lines))
