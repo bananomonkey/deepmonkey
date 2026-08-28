@@ -40,10 +40,14 @@ async def main() -> None:
                 chat_type = getattr(m.chat, "type", "?") if m.chat else "?"
                 chat_id = getattr(m.chat, "id", "?") if m.chat else "?"
                 is_guest = getattr(m, "guest_query_id", None)
-                logger.info("RX-TYPE msg%s type=%s chat=%s from=%s text=%r",
+                fu = getattr(m, "from_user", None)
+                uid = getattr(fu, "id", "?")
+                uname = getattr(fu, "username", "") or ""
+                fname = getattr(fu, "full_name", "") or ""
+                logger.info("RX-TYPE msg%s type=%s chat=%s from=%s@%s (%s) text=%r",
                             "-guest" if is_guest else "",
                             chat_type, chat_id,
-                            getattr(m.from_user, "id", "?"),
+                            uname or uid, uid, fname,
                             (m.text or m.caption or "")[:60])
             elif isinstance(event, CallbackQuery):
                 logger.info("RX-CB from=%s data=%r", getattr(event.from_user, "id", "?"), (event.data or "")[:60])

@@ -233,23 +233,42 @@ async def ask_deepseek(
 
     effective_model = model or model_manager.get()
 
-    try:
-        kwargs = {
-            "model": effective_model,
-            "messages": messages,
-            "timeout": 60,
-        }
-        # При мультимодальных запросах (картинки) не добавляем thinking extra_body —
-        # vision-модели/прокси часто его не принимают вместе с image_url.
-        if use_thinking and not images:
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+    kwargs = {
+        "model": effective_model,
+        "messages": messages,
+        "timeout": 60,
+    }
+    # При мультимодальных запросах (картинки) не добавляем thinking extra_body —
+    # vision-модели/прокси часто его не принимают вместе с image_url.
+    if use_thinking and not images:
+        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
 
-        response = await client.chat.completions.create(**kwargs)
-        answer = response.choices[0].message.content
-        return answer.strip() if answer else FALLBACK_ANSWER
-    except Exception as e:
-        logger.error("Ошибка запроса к DeepSeek API: %s", e)
-        return FALLBACK_ANSWER
+    # Транзиентные сбои (таймаут/сеть/перегрузка) ретраим с небольшим бэкоффом,
+    # чтобы редкие глюки API не выбивали в фолбэк-сообщение.
+    import openai as _openai
+    _RETRYABLE = (
+        _openai.APITimeoutError,
+        _openai.APIConnectionError,
+        _openai.RateLimitError,
+    )
+    last_exc = None
+    for attempt in range(3):
+        try:
+            response = await client.chat.completions.create(**kwargs)
+            answer = response.choices[0].message.content
+            if answer and answer.strip():
+                return answer.strip()
+            return FALLBACK_ANSWER
+        except _RETRYABLE as e:
+            last_exc = e
+            if attempt < 2:
+                await asyncio.sleep(0.8 * (attempt + 1))
+                continue
+        except Exception as e:
+            logger.error("Ошибка запроса к DeepSeek API (не ретраим): %s", e)
+            return FALLBACK_ANSWER
+    logger.error("Ошибка запроса к DeepSeek API после ретраев: %s", last_exc)
+    return FALLBACK_ANSWER
 
 
 async def ask_deepseek_with_search(
@@ -363,8 +382,12 @@ PERSONALITY_SYSTEM_PROMPT = (
 )
 
 
-async def describe_personality(member_name: str, messages: List[str]) -> str:
-    """Строит описание личности участника группы по его сообщениям (экспорту)."""
+async def describe_personality(member_name: str, messages: List[str], brevity: str = "") -> str:
+    """Строит описание личности участника группы по его сообщениям (экспорту).
+
+    brevity — опциональная инструкция о длине ответа (например "одним словом"
+    или "кратко"); если задана, портрет строится соответствующего объёма.
+    """
     if not messages:
         return "По этому участнику пока недостаточно сообщений, чтобы составить описание."
     convo_text = "\n".join(f"- {m}" for m in messages)
@@ -373,6 +396,12 @@ async def describe_personality(member_name: str, messages: List[str]) -> str:
         f"Его сообщения из группового чата:\n{convo_text}\n\n"
         f"Опиши его личность, интересы и привычки."
     )
+    if brevity:
+        user_prompt += (
+            f"\n\nПользователь просит ответить {brevity}. Обязательно соблюди "
+            f"указанную длину ответа — ни одного лишнего слова, только сама "
+            f"характеристика."
+        )
     try:
         response = await client.chat.completions.create(
             model=model_manager.get(),

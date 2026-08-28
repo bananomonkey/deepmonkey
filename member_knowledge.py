@@ -92,17 +92,20 @@ def collect_chat_nicknames(chat_messages) -> List[str]:
     return ranked[:60]
 
 
-async def build_member_knowledge() -> Dict[str, dict]:
+async def build_member_knowledge(force: bool = False) -> Dict[str, dict]:
     """(Пере)собрать базу знаний об участниках из экспорта.
 
     Для каждого участника с достаточным числом сообщений строит/обновляет
-    портрет (если его ещё нет или он устарел) и имя. Также обновляет локальные
-    кликухи каждого чата. Возвращает {user_id: record}.
+    портрет (если его ещё нет или он устарел; при force=True — всегда) и имя.
+    Также обновляет локальные кликухи каждого чата. Возвращает {user_id: record}.
     """
     from deepseek_client import describe_personality
 
     # Новые данные экспорта — сбрасываем кэш индекса поиска.
     _reset_search_cache()
+    # При принудительном обновлении сбрасываем и кэш портретов, чтобы выдать свежие.
+    if force:
+        database.clear_personality_cache()
 
     # Сначала соберём агрегированную статистику по участникам.
     user_texts: Dict[str, List[str]] = {}
@@ -137,7 +140,7 @@ async def build_member_knowledge() -> Dict[str, dict]:
         name = _member_name(uid)
         portrait = rec.get("portrait", "") or ""
         age = rec.get("updated", 0)
-        if portrait and ((time_now() - age) < REBUILD_AFTER_SECONDS):
+        if portrait and not force and ((time_now() - age) < REBUILD_AFTER_SECONDS):
             # Портрет свежий — сохраняем как есть.
             knowledge[uid] = {
                 "name": rec.get("name") or name,

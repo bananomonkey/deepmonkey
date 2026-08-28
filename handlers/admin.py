@@ -684,3 +684,46 @@ async def cmd_learn(message: Message) -> None:
         cnt = rec.get("message_count", 0)
         lines.append(f"• {name}: {cnt} сообщений")
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("reload_members"))
+async def cmd_reload_members(message: Message) -> None:
+    """Перечитать экспорт чата из IMPORT_EXPORT_DIR (новый result.json)
+    и ПРИНУДИТЕЛЬНО обновить портреты уже известных участников.
+
+    Сначала импортирует файлы экспорта из папки (/app/data), затем пересобирает
+    базу знаний, игнорируя кэш давности (force=True) — чтобы новая информация
+    по известным пользователям сразу попала в ответы.
+    """
+    import member_knowledge
+    from chat_import import import_export_dir
+
+    await message.answer("⏳ Перечитываю экспорт чата из <code>/app/data</code>…")
+
+    summary = await asyncio.to_thread(import_export_dir, config.IMPORT_EXPORT_DIR)
+
+    await message.answer(
+        f"✅ Экспорт прочитан: файлов <b>{summary['imported']}</b>, ошибок "
+        f"<b>{len(summary['errors'])}</b>.\n⏳ Обновляю информацию по уже известным "
+        f"участникам (это может занять время)…"
+    )
+
+    try:
+        knowledge = await member_knowledge.build_member_knowledge(force=True)
+    except Exception as e:
+        logger.error("Ошибка при принудительном обновлении знаний: %s", e)
+        await message.answer(f"⚠️ Не удалось обновить базу знаний: {e}")
+        return
+
+    total = len(knowledge)
+    lines = [f"✅ База знаний пересобрана. Участников: <b>{total}</b>"]
+    ranked = sorted(
+        (rec for rec in knowledge.values()),
+        key=lambda r: r.get("message_count", 0),
+        reverse=True,
+    )
+    for rec in ranked[:10]:
+        name = rec.get("name") or "?"
+        cnt = rec.get("message_count", 0)
+        lines.append(f"• {name}: {cnt} сообщений")
+    await message.answer("\n".join(lines))

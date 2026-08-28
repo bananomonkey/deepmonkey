@@ -429,7 +429,7 @@ async def handle_photo_pm(message: Message, bot: Bot) -> None:
 async def handle_text(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
 
-    logger.info("PM от user_id=%s username=%s: %r", user_id, message.from_user.username, (message.text or "")[:80])
+    logger.info("PM от user_id=%s username=%s name=%r: %r", user_id, message.from_user.username, message.from_user.full_name, (message.text or "")[:80])
     if user_storage.is_banned(user_id):
         logger.warning("PM игнорирован: user_id=%s забанен", user_id)
         return
@@ -563,6 +563,22 @@ def _is_about_person(question: str) -> bool:
         "кто этот", "кто эта",
     ]
     return any(w in q for w in about_words)
+
+
+def _brevity_request(text: str) -> str:
+    """Если в вопросе просят коротко/одним словом — вернуть инструкцию длины.
+
+    Возвращает "" если кратность не запрошена, иначе строку вроде "одним словом".
+    """
+    q = str(text or "").lower()
+    brev = ""
+    if "одним словом" in q or "одно слово" in q or "1 словом" in q or "одним словам" in q:
+        brev = "одним словом"
+    elif "нескольких словах" in q or "2-3 " in q or "пара слов" in q:
+        brev = "несколькими словами"
+    elif "кратко" in q or "коротко" in q or "покороче" in q or "вкратце" in q:
+        brev = "кратко"
+    return brev
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text)
@@ -836,17 +852,20 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
 
     member_name = f"@{target_name}" if target_name else str(target_id)
 
+    # Если просят коротко/одним словом — не берём из кэша, а строим нужного объёма.
+    brev = _brevity_request(question)
+
     # Кэш по @username: повторно не тратим токены на описание личности.
-    if uname:
+    if uname and not brev:
         cached = group_sessions.get_cached_personality(uname)
         if cached is not None:
             logger.info("PERSONA: портрет %s из кэша (сообщений: %s)", member_name, cached.get("message_count"))
             description = cached["personality"]
         else:
-            description = await describe_personality(member_name, texts[-200:])
+            description = await describe_personality(member_name, texts[-200:], brevity=brev)
             group_sessions.set_cached_personality(uname, description, len(texts))
     else:
-        description = await describe_personality(member_name, texts[-200:])
+        description = await describe_personality(member_name, texts[-200:], brevity=brev)
 
     await _reply_with_quote(message, bot, question, description)
 
@@ -1197,11 +1216,16 @@ async def _try_global_personality(query_text: str, bot_username: str) -> str | N
     if not is_id and key.lower() == (bot_username or "").lower():
         return None
 
+    # Если просят коротко/одним словом — не берём из кэша полный портрет,
+    # а перегенерируем нужного объёма.
+    brev = _brevity_request(query_text)
+
     # Кэш: если портрет уже составлен — отдаём его, не тратя токены.
-    cached = group_sessions.get_cached_personality(key)
-    if cached is not None:
-        logger.info("GLOBAL_PERSONA: портрет %s из кэша (сообщений: %s)", key, cached.get("message_count"))
-        return cached["personality"]
+    if not brev:
+        cached = group_sessions.get_cached_personality(key)
+        if cached is not None:
+            logger.info("GLOBAL_PERSONA: портрет %s из кэша (сообщений: %s)", key, cached.get("message_count"))
+            return cached["personality"]
 
     if is_id:
         texts = database.get_member_log_all_for_user_global(key, limit=300)
@@ -1219,8 +1243,9 @@ async def _try_global_personality(query_text: str, bot_username: str) -> str | N
             f"Нашёл сообщений: {len(texts)}."
         )
     logger.info("GLOBAL_PERSONA: %s сообщений для %s (из базы, без интернет-поиска)", len(texts), key)
-    portrait = await describe_personality(display or key, texts[-200:])
-    group_sessions.set_cached_personality(key, portrait, len(texts))
+    portrait = await describe_personality(display or key, texts[-200:], brevity=brev)
+    if not brev:
+        group_sessions.set_cached_personality(key, portrait, len(texts))
     return portrait
 
 

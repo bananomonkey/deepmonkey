@@ -133,6 +133,17 @@ def set_personality_cache(username: str, personality: str, message_count: int) -
     )
 
 
+def clear_personality_cache() -> None:
+    """Очистить все кэшированные портреты (после обновления экспорта)."""
+    init_table(PERSONALITY_CACHE_TABLE)
+    conn = _conn()
+    try:
+        conn.execute(f"DELETE FROM {PERSONALITY_CACHE_TABLE}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # --- База знаний об участниках (имена + портреты + кликухи) ---
 # Ключ = user_id, value = {"name": str, "portrait": str, "nicknames": [str],
 # "message_count": int, "updated": float}. Используется для встраивания
