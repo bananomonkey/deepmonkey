@@ -128,6 +128,42 @@ def get_member_log_all_for_user(chat_id: int, user_id: int, limit: int = 300) ->
     return matched[-limit:]
 
 
+def iter_member_log_all_chats():
+    """Перебрать ВСЕ чаты с экспортированной историей: (chat_id, messages)."""
+    table = MEMBER_LOG_ALL_TABLE
+    init_table(table)
+    conn = _conn()
+    try:
+        for key, value in conn.execute(f"SELECT key, value FROM {table}"):
+            try:
+                messages = json.loads(value)
+            except Exception:
+                messages = []
+            if isinstance(messages, list):
+                yield str(key), messages
+    finally:
+        conn.close()
+
+
+def find_member_globally(username: str, limit: int = 300) -> list:
+    """Найти сообщения участника по @username во ВСЕХ чатах базы.
+
+    Используется для инлайн-запросов 'кто такой @X', когда из inline-контекста
+    неизвестен чат. Возвращает список текстовых сообщений (от старых к новым).
+    """
+    uname = str(username).lower().lstrip("@")
+    collected = []
+    for _chat_id, messages in iter_member_log_all_chats():
+        for m in messages:
+            mu = m.get("username")
+            if mu and str(mu).lower().lstrip("@") == uname:
+                text = (m.get("text") or "").strip()
+                if text:
+                    collected.append(text)
+    return collected[-limit:]
+
+
+
 def diagnose() -> str:
     """Человекочитаемая сводка о состоянии БД — для стартовых логов."""
     d = os.path.dirname(_db_path) or "."

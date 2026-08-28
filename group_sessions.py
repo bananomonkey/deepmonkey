@@ -154,6 +154,13 @@ class GroupChatSessions:
         rec = self._data.get(str(chat_id))
         return dict(rec.get("member_profiles", {})) if rec else {}
 
+    def get_global_member_log(self, username: str, limit: int = 300) -> List[str]:
+        """Сообщения участника по @username из ВСЕХ чатов экспортированной базы.
+
+        Для инлайн-запросов 'кто такой @X', когда неизвестен чат.
+        """
+        return [t for t in database.find_member_globally(username, limit=limit) if t]
+
     def get_member_profile(self, chat_id: int, user_id: int) -> str:
         rec = self._data.get(str(chat_id))
         if not rec:

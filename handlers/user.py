@@ -670,8 +670,13 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 INLINE_DEEPSEEK_TIMEOUT = 90
 
 
-async def _get_ai_answer(user_id: int, query_text: str) -> str:
+async def _get_ai_answer(user_id: int, query_text: str, bot_username: str = "") -> str:
     """Получить ответ ИИ для inline/guest запроса."""
+    # Запрос "кто такой @X" — берём из базы (без интернет-поиска), если есть данные.
+    persona = await _try_global_personality(query_text, bot_username)
+    if persona is not None:
+        return persona
+
     profile = user_storage.get_profile(user_id)
     user_custom_prompt = user_settings.get_system_prompt(user_id)
     system_prompt = build_full_system_prompt(profile, user_custom_prompt)
@@ -877,7 +882,7 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
 
     await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
 
-    answer = await _get_ai_answer(user_id, query_text)
+    answer = await _get_ai_answer(user_id, query_text, bot.username)
 
     if is_private:
         # ЛС-гость: шлём обычное сообщение (как в handle_text), сохраняем контекст чата.
@@ -895,6 +900,32 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
 
 
 # --- Fallback: chosen_inline_result (когда Guest Mode не активен) ---
+
+async def _try_global_personality(query_text: str, bot_username: str) -> str | None:
+    """Попытка ответить на 'кто такой @X' из базы (экспорт юзербота) в инлайн-пути.
+
+    Ищем сообщения участника по @username во ВСЕХ чатах, собранных юзерботом.
+    Если данных достаточно — возвращаем портрет из базы (БЕЗ интернет-поиска,
+    markdown). Если данных нет — вернём None и пойдёт обычный путь.
+    """
+    if not _is_about_person(query_text):
+        return None
+    uname = _extract_username(query_text)
+    if not uname:
+        return None
+    if uname.lower() == (bot_username or "").lower():
+        return None
+    texts = group_sessions.get_global_member_log(uname, limit=300)
+    if len(texts) < 15:
+        return None
+    logger.info("GLOBAL_PERSONA: %s сообщений для @%s (из базы, без интернет-поиска)", len(texts), uname)
+    return await describe_personality(f"@{uname}", texts[-200:])
+
+
+def _extract_username(text: str) -> str | None:
+    m = re.search(r"@([A-Za-z0-9_]{4,})", text or "")
+    return m.group(1) if m else None
+
 
 @router.chosen_inline_result()
 async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> None:
@@ -927,7 +958,7 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult, bot: Bot) -> N
     except Exception:
         pass
 
-    answer = await _get_ai_answer(user_id, query_text)
+    answer = await _get_ai_answer(user_id, query_text, bot.username)
 
     # --- Облёгчённый typewriter + обязательный финальный edit с retry при flood ---
     # Telegram жёстко лимитирует editMessageText (~1/сек на чат). Частые edit
