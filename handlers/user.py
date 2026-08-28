@@ -1081,7 +1081,15 @@ async def _try_global_personality(query_text: str, bot_username: str) -> str | N
         return cached["personality"]
     texts = group_sessions.get_global_member_log(uname, limit=300)
     if len(texts) < 15:
-        return None
+        # Это запрос о личности участника чата, но по нему нет данных в базе.
+        # Возвращаем понятный ответ вместо бессмысленного веб-поиска по @username.
+        logger.info("GLOBAL_PERSONA: нет данных по @%s (%d сообщений)", uname, len(texts))
+        return (
+            f"По участнику <code>@{uname}</code> пока недостаточно сведений, чтобы "
+            "составить портрет — в базе меньше 15 его сообщений. Пусть он напишет "
+            "в чат, и я соберу его описание.\n\n"
+            f"Нашёл сообщений: {len(texts)}."
+        )
     logger.info("GLOBAL_PERSONA: %s сообщений для @%s (из базы, без интернет-поиска)", len(texts), uname)
     portrait = await describe_personality(f"@{uname}", texts[-200:])
     group_sessions.set_cached_personality(uname, portrait, len(texts))

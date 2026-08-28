@@ -180,9 +180,15 @@ def find_member_globally(username: str, limit: int = 300) -> list:
 
     Используется для инлайн-запросов 'кто такой @X', когда из inline-контекста
     неизвестен чат. Возвращает список текстовых сообщений (от старых к новым).
+
+    Сначала ищем по полю username, затем по отображаемому имени (name) — многие
+    участники ставят отображаемое имя, совпадающее с их @username. В Telegram
+    Desktop JSON export поле username обычно пустое, поэтому без name-фоллбэка
+    такие запросы не находили сообщений.
     """
     uname = str(username).lower().lstrip("@")
     collected = []
+    by_name = []
     for _chat_id, messages in iter_member_log_all_chats():
         for m in messages:
             mu = m.get("username")
@@ -190,7 +196,15 @@ def find_member_globally(username: str, limit: int = 300) -> list:
                 text = (m.get("text") or "").strip()
                 if text:
                     collected.append(text)
-    return collected[-limit:]
+                continue
+            name = m.get("name")
+            if name and str(name).strip().lower().lstrip("@") == uname:
+                text = (m.get("text") or "").strip()
+                if text:
+                    by_name.append(text)
+    if collected:
+        return collected[-limit:]
+    return by_name[-limit:]
 
 
 def get_member_log_all_for_user_global(user_id, limit: int = 300) -> list:

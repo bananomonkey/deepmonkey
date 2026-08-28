@@ -190,6 +190,9 @@ class GroupChatSessions:
                 mu = m.get("username")
                 if mu and str(mu).lower().lstrip("@") == uname and m.get("user_id") is not None:
                     return int(m["user_id"])
+                name = m.get("name")
+                if name and str(name).strip().lower().lstrip("@") == uname and m.get("user_id") is not None:
+                    return int(m["user_id"])
         return None
 
     def get_member_username_map(self, chat_id: int) -> Dict[str, int]:
