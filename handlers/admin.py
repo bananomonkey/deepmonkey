@@ -121,6 +121,20 @@ async def toggle_thinking(callback: CallbackQuery) -> None:
     logger.info("Админ %s изменил глобальную думающую модель: %s", callback.from_user.id, new_state)
 
 
+@router.callback_query(F.data == "admin_toggle_multimodal")
+async def toggle_multimodal(callback: CallbackQuery) -> None:
+    new_state = not user_settings.is_multimodal_enabled()
+    await user_settings.set_multimodal_enabled(new_state)
+    status = "ВКЛЮЧЕНА — бот принимает фото с текстом" if new_state else "ВЫКЛЮЧЕНА — бот не принимает фото"
+    await callback.answer("✅ Изменено")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=admin_menu_kb())
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer(f"👁 Мультимодальность: {status}.")
+    logger.info("Админ %s изменил глобальную мультимодальность: %s", callback.from_user.id, new_state)
+
+
 # ============================================================
 #  Модель DeepSeek
 # ============================================================

@@ -8,6 +8,10 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
         "🧠 Думающая модель: ВКЛ ✅" if user_settings.is_thinking_enabled()
         else "🧠 Думающая модель: ВЫКЛ ⛔"
     )
+    multimodal_label = (
+        "👁 Мультимодальность: ВКЛ ✅" if user_settings.is_multimodal_enabled()
+        else "👁 Мультимодальность: ВЫКЛ ⛔"
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📄 Показать текущий промт", callback_data="admin_show_prompt")],
@@ -15,6 +19,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔄 Сбросить промт", callback_data="admin_reset_prompt")],
             [InlineKeyboardButton(text="🤖 Сменить модель DeepSeek", callback_data="admin_change_model")],
             [InlineKeyboardButton(text=thinking_label, callback_data="admin_toggle_thinking")],
+            [InlineKeyboardButton(text=multimodal_label, callback_data="admin_toggle_multimodal")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
             [InlineKeyboardButton(text="👥 Пользователи в базе", callback_data="admin_view_users")],
             [InlineKeyboardButton(text="✉️ Написать пользователю", callback_data="admin_direct_message")],
@@ -61,10 +66,12 @@ def chats_list_kb(chats: list) -> InlineKeyboardMarkup:
 def model_select_kb(current_model: str) -> InlineKeyboardMarkup:
     fast_label = "⚡ Быстрая" + (" ✅" if current_model == "fast" else "")
     think_label = "🧠 Думающая" + (" ✅" if current_model == "thinking" else "")
+    vision_label = "👁 Vision (видит фото)" + (" ✅" if current_model == "vision" else "")
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=fast_label, callback_data="set_model:fast")],
             [InlineKeyboardButton(text=think_label, callback_data="set_model:thinking")],
+            [InlineKeyboardButton(text=vision_label, callback_data="set_model:vision")],
         ]
     )
 

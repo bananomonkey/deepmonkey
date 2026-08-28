@@ -10,17 +10,20 @@ TABLE = "user_settings"
 
 SETTINGS_TABLE = "settings"
 THINKING_KEY = "thinking_enabled"
+MULTIMODAL_KEY = "multimodal_enabled"
 
 DEFAULT_MODEL = "fast"
 
 MODEL_MAP = {
     "fast": "deepseek-v4-flash",
     "thinking": "deepseek-v4-flash",
+    "vision": "deepseek-v4-flash-vision-exp",
 }
 
 THINKING_PARAM_MAP = {
     "fast": False,
     "thinking": True,
+    "vision": True,
 }
 
 
@@ -31,6 +34,7 @@ class UserSettings:
         self._lock = asyncio.Lock()
         self._data: Dict[int, dict] = {}
         self._thinking_enabled = True
+        self._multimodal_enabled = True
         self._load_from_db()
 
     def _load_from_db(self) -> None:
@@ -47,6 +51,13 @@ class UserSettings:
                 logger.info("Думающая модель глобально: %s", "ВКЛ" if self._thinking_enabled else "ВЫКЛ")
         except Exception as e:
             logger.error("Не удалось прочитать флаг thinking_enabled: %s", e)
+        try:
+            value = database.get_value(SETTINGS_TABLE, MULTIMODAL_KEY)
+            if value is not None:
+                self._multimodal_enabled = bool(value)
+                logger.info("Мультимодальность глобально: %s", "ВКЛ" if self._multimodal_enabled else "ВЫКЛ")
+        except Exception as e:
+            logger.error("Не удалось прочитать флаг multimodal_enabled: %s", e)
 
     def _ensure_user(self, user_id: int) -> dict:
         if user_id not in self._data:
@@ -71,6 +82,22 @@ class UserSettings:
 
     def is_thinking_enabled(self) -> bool:
         return self._thinking_enabled
+
+    def is_multimodal_enabled(self) -> bool:
+        return self._multimodal_enabled
+
+    def is_vision_model(self, user_id: int) -> bool:
+        """Модель пользователя — vision (мультимодальная)."""
+        return self.get_model(user_id) == "vision"
+
+    async def set_multimodal_enabled(self, flag: bool) -> None:
+        self._multimodal_enabled = bool(flag)
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, database.upsert, SETTINGS_TABLE, MULTIMODAL_KEY, bool(flag))
+            logger.info("Мультимодальность глобально: %s", "ВКЛ" if flag else "ВЫКЛ")
+        except Exception as e:
+            logger.error("Не удалось сохранить флаг multimodal_enabled: %s", e)
 
     async def set_thinking_enabled(self, flag: bool) -> None:
         self._thinking_enabled = bool(flag)

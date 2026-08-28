@@ -202,21 +202,28 @@ async def noop_callback(callback: CallbackQuery) -> None:
 @router.message(Command("model"), F.chat.type == "private")
 async def cmd_model(message: Message) -> None:
     current = user_settings.get_model(message.from_user.id)
-    label = "⚡ Быстрая" if current == "fast" else "🧠 Думающая"
+    label = MODEL_LABELS.get(current, "⚡ Быстрая")
     await message.answer(
         f"🤖 Текущая модель: <b>{label}</b>\n\nВыберите:",
         reply_markup=model_select_kb(current),
     )
 
 
+MODEL_LABELS = {
+    "fast": "⚡ Быстрая",
+    "thinking": "🧠 Думающая",
+    "vision": "👁 Vision (видит фото)",
+}
+
+
 @router.callback_query(F.data.startswith("set_model:"))
 async def cb_set_model(callback: CallbackQuery) -> None:
     model_key = callback.data.split(":", 1)[1]
-    if model_key not in ("fast", "thinking"):
+    if model_key not in ("fast", "thinking", "vision"):
         await callback.answer("Неизвестная модель", show_alert=True)
         return
     await user_settings.set_model(callback.from_user.id, model_key)
-    label = "⚡ Быстрая" if model_key == "fast" else "🧠 Думающая"
+    label = MODEL_LABELS.get(model_key, "⚡ Быстрая")
     await callback.answer(f"Модель изменена на {label}")
     try:
         await callback.message.edit_reply_markup(reply_markup=model_select_kb(model_key))
@@ -357,6 +364,65 @@ async def handle_chat_export_document(message: Message) -> None:
         f"Chat ID: <code>{chat_id}</code>\n\n"
         f"Теперь спросите: <code>@имя_бота кто такой @юзернейм</code>"
     )
+
+
+@router.message(F.photo, F.chat.type == "private")
+async def handle_photo_pm(message: Message, bot: Bot) -> None:
+    """Приём фото в ЛС (мультимодальность): картинка + подпись → DeepSeek Vision."""
+    user_id = message.from_user.id
+
+    if user_storage.is_banned(user_id):
+        return
+
+    if not user_settings.is_multimodal_enabled():
+        await message.answer(
+            "👁 Мультимодальность сейчас выключена. Включите её в админ-панели "
+            "или выберите модель Vision через /model, если она доступна."
+        )
+        return
+
+    if not await rate_limiter.allow(user_id):
+        await message.answer("⏳ Слишком много сообщений подряд. Подождите немного.")
+        return
+
+    await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
+    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+    # Берём самое большое разрешение из присланных
+    photo = message.photo[-1]
+    try:
+        file = await bot.get_file(photo.file_id)
+        data = (await bot.download_file(file)).read()
+        import base64
+        data_url = "data:image/jpeg;base64," + base64.b64encode(data).decode()
+    except Exception as e:
+        logger.error("Не удалось скачать фото: %s", e)
+        await message.answer("⚠️ Не удалось обработать фото.")
+        return
+
+    caption = (message.caption or "").strip() or "Что на этом фото?"
+
+    profile = user_storage.get_profile(user_id)
+    user_custom_prompt = user_settings.get_system_prompt(user_id)
+    system_prompt = build_full_system_prompt(profile, user_custom_prompt)
+    history = chat_sessions.get_history(user_id)
+
+    model_id = user_settings.get_model_id(user_id)
+    use_thinking = user_settings.use_thinking(user_id)
+
+    try:
+        answer = await ask_deepseek_with_search(
+            system_prompt, caption, history=history,
+            model=model_id, use_thinking=use_thinking, images=[data_url],
+        )
+    except Exception as e:
+        logger.error("Ошибка при ответе на фото: %s", e)
+        answer = "⚠️ Произошла ошибка при анализе фото. Попробуйте позже."
+
+    await _safe_answer(message, answer)
+
+    await chat_sessions.append_message(user_id, "user", f"[фото] {caption}")
+    await chat_sessions.append_message(user_id, "assistant", answer)
 
 
 @router.message(F.text, F.chat.type == "private")

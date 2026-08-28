@@ -215,11 +215,21 @@ async def ask_deepseek(
     history: Optional[List[Dict[str, str]]] = None,
     model: Optional[str] = None,
     use_thinking: bool = False,
+    images: Optional[List[str]] = None,
 ) -> str:
     messages = [{"role": "system", "content": system_prompt}]
     if history:
         messages.extend(history)
-    messages.append({"role": "user", "content": user_text})
+
+    # Мультимодальность: если переданы изображения (base64 data URL), формируем
+    # user-сообщение как список content-блоков [text, image_url, ...].
+    if images:
+        content: List[Dict] = [{"type": "text", "text": user_text}]
+        for img in images:
+            content.append({"type": "image_url", "image_url": {"url": img}})
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": user_text})
 
     effective_model = model or model_manager.get()
 
@@ -246,12 +256,14 @@ async def ask_deepseek_with_search(
     history: Optional[List[Dict[str, str]]] = None,
     model: Optional[str] = None,
     use_thinking: bool = False,
+    images: Optional[List[str]] = None,
 ) -> str:
-    search_query = await _ai_decides_search(user_text, model=model)
-
+    # При наличии изображений веб-поиск не запускаем (это анализ картинки).
     search_context = ""
-    if search_query:
-        search_context = await web_search(search_query)
+    if not images:
+        search_query = await _ai_decides_search(user_text, model=model)
+        if search_query:
+            search_context = await web_search(search_query)
 
     if search_context:
         user_text = (
@@ -264,7 +276,7 @@ async def ask_deepseek_with_search(
 
     return await ask_deepseek(
         system_prompt, user_text, history=history,
-        model=model, use_thinking=use_thinking,
+        model=model, use_thinking=use_thinking, images=images,
     )
 
 
