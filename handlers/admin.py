@@ -264,7 +264,7 @@ async def view_user_messages_start(callback: CallbackQuery, state: FSMContext) -
 
 @router.message(AdminStates.waiting_for_view_messages_user_id, F.text)
 async def view_user_messages_finish(message: Message, state: FSMContext) -> None:
-    import chat_sessions
+    from chat_sessions import chat_sessions
 
     text = message.text.strip()
     await state.clear()

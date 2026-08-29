@@ -620,7 +620,13 @@ async def handle_group_photo(message: Message, bot: Bot) -> None:
     if user_storage.is_banned(user_id):
         return
 
-    if not _is_reply_to_bot(message, bot) and not _is_bot_mentioned(message, bot):
+    is_reply_bot = _is_reply_to_bot(message, bot)
+    is_mention = _is_bot_mentioned(message, bot)
+    logger.info("GROUP_PHOTO chat=%s uid=%s reply_to_bot=%s mentioned=%s cap=%r",
+                message.chat.id, user_id, is_reply_bot, is_mention,
+                (message.caption or "")[:60])
+
+    if not is_reply_bot and not is_mention:
         return
 
     if not user_settings.is_multimodal_enabled():
