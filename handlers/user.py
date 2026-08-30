@@ -1,6 +1,8 @@
 import asyncio
 import logging
 
+import time
+
 from aiogram import Router, F, Bot
 from aiogram.enums import ChatAction, MessageEntityType, ParseMode
 from aiogram.exceptions import TelegramBadRequest
@@ -47,6 +49,10 @@ from user_storage import user_storage
 
 logger = logging.getLogger(__name__)
 router = Router(name="user")
+
+# Через сколько секунд кэшированный портрет участника считается устаревшим
+# и пересобирается заново (чтобы инфопри «кто я» не была застойной).
+PERSONALITY_CACHE_TTL = 600
 
 WELCOME_TEXT = (
     "👋 Привет! Я бот на базе ИИ.\n\n"
@@ -634,6 +640,20 @@ async def _download_image_data(bot: Bot, photo) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(data).decode()
 
 
+async def _get_avatar_data(bot: Bot, user_id: int) -> str | None:
+    """Скачать текущую аватарку пользователя (data URL) или None, если её нет."""
+    try:
+        if not user_settings.is_multimodal_enabled():
+            return None
+        photos = await bot.get_user_profile_photos(user_id, offset=0, limit=1)
+        if not photos or not photos.photos:
+            return None
+        return await _download_image_data(bot, photos.photos[0][-1])
+    except Exception as e:
+        logger.error("Не удалось получить аватарку %s: %s", user_id, e)
+        return None
+
+
 async def _photo_from_message(message: Message, bot: Bot) -> str | None:
     """Вернуть data URL фото из самого сообщения ИЛИ из сообщения, на которое
     отвечает реплай (чтобы бот видел картинку, когда его пингуют в ответе на
@@ -823,6 +843,10 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
 
     question = message.text or message.caption or ""
 
+    personality = await _handle_personality_request(message, bot, user_id, question)
+    if personality is not None:
+        return
+
     photo_data_url = await _photo_from_message(message, bot)
     if photo_data_url:
         question = (question or "").strip() or "Что на этом фото?"
@@ -931,7 +955,20 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
             except Exception:
                 pass
 
-    if not texts:
+    member_name = f"@{target_name}" if target_name else str(target_id)
+
+    # Если просят коротко/одним словом — не берём из кэша, а строим нужного объёма.
+    brev = _brevity_request(question)
+
+    # Аватарка пользователя (vision): чтобы бот смотрел и на фото профиля.
+    avatar = None
+    try:
+        if user_settings.is_multimodal_enabled():
+            avatar = await _get_avatar_data(bot, target_id)
+    except Exception as e:
+        logger.error("Аватарка %s: %s", target_id, e)
+
+    if not texts and not avatar:
         await _reply_with_quote(
             message, bot, question,
             "Пока слишком мало сообщений об этом участнике, чтобы я мог его описать. "
@@ -939,22 +976,35 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
         )
         return True
 
-    member_name = f"@{target_name}" if target_name else str(target_id)
-
-    # Если просят коротко/одним словом — не берём из кэша, а строим нужного объёма.
-    brev = _brevity_request(question)
-
-    # Кэш по @username: повторно не тратим токены на описание личности.
-    if uname and not brev:
-        cached = group_sessions.get_cached_personality(uname)
+    # «Кто я» — без кэша, всегда свежий портрет (по последним сообщениям + аватарке).
+    if about_self or brev:
+        description = await describe_personality(
+            member_name, texts[-200:], brevity=brev, image=avatar,
+        )
+    elif avatar is not None:
+        # Аватарка изменилась — обновляем портрет, а не берём старый кэш.
+        description = await describe_personality(
+            member_name, texts[-200:], image=avatar,
+        )
+    else:
+        # Кэш по @username: повторно не тратим токены на описание личности.
+        # Но портрет устаревает — если кэшу больше CACHE_TTL, пересобираем заново.
+        uname_unique = uname
+        cached = group_sessions.get_cached_personality(uname_unique) if uname_unique else None
+        cached_fresh = False
         if cached is not None:
-            logger.info("PERSONA: портрет %s из кэша (сообщений: %s)", member_name, cached.get("message_count"))
+            updated = cached.get("updated") or 0
+            cached_fresh = (time.time() - updated) < PERSONALITY_CACHE_TTL
+        if cached is not None and cached_fresh:
+            logger.info(
+                "PERSONA: портрет %s из кэша (сообщений: %s)",
+                member_name, cached.get("message_count"),
+            )
             description = cached["personality"]
         else:
             description = await describe_personality(member_name, texts[-200:], brevity=brev)
-            group_sessions.set_cached_personality(uname, description, len(texts))
-    else:
-        description = await describe_personality(member_name, texts[-200:], brevity=brev)
+            if uname_unique:
+                group_sessions.set_cached_personality(uname_unique, description, len(texts))
 
     await _reply_with_quote(message, bot, question, description)
 

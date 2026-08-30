@@ -8,6 +8,9 @@ from openai import AsyncOpenAI
 
 import config
 from model_manager import model_manager
+from user_settings import MODEL_MAP
+
+_VISION_MODEL = MODEL_MAP["vision"]
 
 logger = logging.getLogger(__name__)
 
@@ -385,19 +388,27 @@ PERSONALITY_SYSTEM_PROMPT = (
 )
 
 
-async def describe_personality(member_name: str, messages: List[str], brevity: str = "") -> str:
-    """Строит описание личности участника группы по его сообщениям (экспорту).
+async def describe_personality(
+    member_name: str,
+    messages: List[str],
+    brevity: str = "",
+    image: Optional[str] = None,
+) -> str:
+    """Строит описание личности участника группы по его сообщениям (экспорту)
+    и, если дано, по фото профиля (data URL, vision-моделью).
 
     brevity — опциональная инструкция о длине ответа (например "одним словом"
     или "кратко"); если задана, портрет строится соответствующего объёма.
     """
-    if not messages:
+    if not messages and not image:
         return "По этому участнику пока недостаточно сообщений, чтобы составить описание."
     convo_text = "\n".join(f"- {m}" for m in messages)
     user_prompt = (
         f"Участник: {member_name}\n\n"
         f"Его сообщения из группового чата:\n{convo_text}\n\n"
-        f"Опиши его личность, интересы и привычки."
+        f"Опиши его личность, интересы и привычки. Если дана фотография профиля — "
+        f"опиши и её: внешность, настроение, что можно сказать по аватарке, "
+        f"и как она дополняет портрет. Не выдумывай, чего нет на фото."
     )
     if brevity:
         user_prompt += (
@@ -406,14 +417,21 @@ async def describe_personality(member_name: str, messages: List[str], brevity: s
             f"характеристика."
         )
     try:
-        response = await client.chat.completions.create(
-            model=model_manager.get(),
-            messages=[
+        kwargs = {
+            "model": model_manager.get(),
+            "messages": [
                 {"role": "system", "content": PERSONALITY_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            timeout=30,
-        )
+            "timeout": 30,
+        }
+        if image:
+            kwargs["model"] = _VISION_MODEL
+            kwargs["messages"][1]["content"] = [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": image}},
+            ]
+        response = await client.chat.completions.create(**kwargs)
         answer = response.choices[0].message.content
         return answer.strip() if answer else "Не удалось составить описание."
     except Exception as e:
