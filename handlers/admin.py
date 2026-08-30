@@ -126,16 +126,21 @@ async def cmd_persona(message: Message) -> None:
 
 
 async def _build_persona_block(chat_id: int, target_id: int) -> tuple[bool, str]:
-    """Генерирует и сохраняет блок персоны (описание + образец сообщений) в БД."""
+    """Генерирует и сохраняет блок персоны (описание + образец сообщений) в БД.
+
+    Сообщения человека берём глобально (из всех экспортированных чатов) — так
+    манера найдётся даже если id чата указан в форме -100..., а в базе он хранится
+    без префикса. chat_id используется как «куда» применить персону.
+    """
     try:
         import group_sessions
         from deepseek_client import describe_personality
 
-        texts = group_sessions.get_full_member_log(chat_id, target_id, limit=200)
+        texts = database.get_member_log_all_for_user_global(target_id, limit=200)
         if len(texts) < 10:
             return False, "слишком мало сообщений (их меньше 10)."
 
-        name = group_sessions.member_display_name(chat_id, target_id) or str(target_id)
+        name = group_sessions.member_display_name_global(target_id) or str(target_id)
         description = await describe_personality(f"(@{name})", texts[-150:])
         sample = "\n".join(f"- {t}" for t in texts[-25:])
 
