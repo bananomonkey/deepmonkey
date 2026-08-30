@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 from typing import Dict, List, Optional
@@ -257,24 +258,84 @@ async def ask_deepseek(
         _openai.APIConnectionError,
         _openai.RateLimitError,
     )
-    last_exc = None
-    for attempt in range(3):
-        try:
-            response = await client.chat.completions.create(**kwargs)
-            answer = response.choices[0].message.content
+
+    # Агентный слой: передаём модели список API-инструментов, чтобы она сама
+    # решала, когда ей не хватает данных (время, погода, курсы, поиск и т.п.),
+    # вызывала нужный инструмент и продолжала, пока не будет готова ответить.
+    # При мультимодальных (vision) запросах инструменты не подключаем: эти
+    # модели/прокси часто не принимают tools вместе с image_url.
+    from tools import as_tools_schema, run_tool
+    if not images:
+        kwargs["tools"] = as_tools_schema()
+
+    async def _send() -> list:
+        """Одна отправка к API с ретраями. Возвращает message объект."""
+        last_exc = None
+        for attempt in range(3):
+            try:
+                resp = await client.chat.completions.create(**kwargs)
+                return resp.choices[0].message
+            except _RETRYABLE as e:
+                last_exc = e
+                if attempt < 2:
+                    await asyncio.sleep(0.8 * (attempt + 1))
+                    continue
+            except Exception as e:
+                logger.error("Ошибка запроса к DeepSeek API (не ретраим): %s", e)
+                raise
+        logger.error("Ошибка запроса к DeepSeek API после ретраев: %s", last_exc)
+        return None
+
+    MAX_TOOL_ROUNDS = 4
+    for _round in range(MAX_TOOL_ROUNDS):
+        msg = await _send()
+        if msg is None:
+            return FALLBACK_ANSWER
+
+        tool_calls = getattr(msg, "tool_calls", None)
+        if not tool_calls:
+            answer = msg.content
             if answer and answer.strip():
                 return answer.strip()
             return FALLBACK_ANSWER
-        except _RETRYABLE as e:
-            last_exc = e
-            if attempt < 2:
-                await asyncio.sleep(0.8 * (attempt + 1))
-                continue
-        except Exception as e:
-            logger.error("Ошибка запроса к DeepSeek API (не ретраим): %s", e)
-            return FALLBACK_ANSWER
-    logger.error("Ошибка запроса к DeepSeek API после ретраев: %s", last_exc)
-    return FALLBACK_ANSWER
+
+        # Исполняем все вызванные инструменты параллельно.
+        calls = [
+            (tc.function.name, json.loads(tc.function.arguments or "{}"))
+            for tc in tool_calls
+        ]
+        logger.info("TOOL_CALLS (%s): %s", len(calls), [n for n, _ in calls])
+        results = await asyncio.gather(
+            *(run_tool(name, args or {}) for name, args in calls),
+            return_exceptions=True,
+        )
+
+        kwargs["messages"].append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": tc.id,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments or "{}",
+                    },
+                }
+                for tc in tool_calls
+            ],
+        })
+        for tc, result in zip(tool_calls, results):
+            if isinstance(result, Exception):
+                result = f"Инструмент упал: {result}"
+            kwargs["messages"].append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": str(result),
+            })
+
+    # Превышен лимит итераций инструментов — вернуть последний текст, если есть.
+    return msg.content and msg.content.strip() or FALLBACK_ANSWER
 
 
 async def ask_deepseek_with_search(

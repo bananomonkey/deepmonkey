@@ -470,6 +470,12 @@ async def handle_text(message: Message, bot: Bot) -> None:
 
     await _safe_answer(message, answer)
 
+    # Если ИИ сгенерировал картинки (QR, аватарка, фейковое фото) — в ЛС
+    # отправляем их файлом дополнительно.
+    img_urls = _extract_image_urls(answer)
+    for u in img_urls:
+        await _send_image_file(bot, message, u)
+
     await chat_sessions.append_message(user_id, "user", message.text)
     await chat_sessions.append_message(user_id, "assistant", answer)
 
@@ -675,6 +681,51 @@ async def _photo_from_message(message: Message, bot: Bot) -> str | None:
     except Exception as e:
         logger.error("Не удалось извлечь фото для vision: %s", e)
         return None
+
+
+# Домены API-инструментов, которые генерируют картинки. Если в ответе ИИ
+# встречается такой URL — в ЛС отправляем файлом, а в группе оставляем ссылку.
+_TOOL_IMAGE_DOMAINS = ("api.qrserver.com", "api.dicebear.com", "randomuser.me")
+
+
+def _extract_image_urls(answer: str) -> List[str]:
+    """Вытащить URL картинок из ответа ИИ по известным доменам инструментов."""
+    urls = []
+    if not answer:
+        return urls
+    for m in re.findall(r"https?://[^\s)\]]+", answer):
+        if any(d in m for d in _TOOL_IMAGE_DOMAINS):
+            urls.append(m.rstrip(".,!?;"))
+    return urls
+
+
+async def _send_image_file(bot: Bot, message: Message, url: str) -> None:
+    """Отправить картинку файлом в ЛС (в группах — не шлём: бот гость)."""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return
+            ext = "png"
+            if "dicebear" in url or url.endswith(".svg"):
+                ext = "svg"
+            caption = "🔗 " + url
+            from io import BytesIO
+            buf = BytesIO(resp.content)
+            buf.name = f"image.{ext}"
+            if ext == "svg":
+                await bot.send_document(
+                    message.chat.id, buf, caption=caption,
+                    disable_notification=True,
+                )
+            else:
+                await bot.send_photo(
+                    message.chat.id, buf, caption=caption,
+                    disable_notification=True,
+                )
+    except Exception as e:
+        logger.error("Не удалось отправить картинку %s: %s", url, e)
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.photo)
