@@ -18,6 +18,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✏️ Изменить промт", callback_data="admin_edit_prompt")],
             [InlineKeyboardButton(text="🔄 Сбросить промт", callback_data="admin_reset_prompt")],
             [InlineKeyboardButton(text="🤖 Сменить модель DeepSeek", callback_data="admin_change_model")],
+            [InlineKeyboardButton(text="🎛 Параметры генерации", callback_data="admin_gen_params")],
             [InlineKeyboardButton(text=thinking_label, callback_data="admin_toggle_thinking")],
             [InlineKeyboardButton(text=multimodal_label, callback_data="admin_toggle_multimodal")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
@@ -27,6 +28,20 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="🚫 Забанить пользователя", callback_data="admin_ban_user")],
             [InlineKeyboardButton(text="✅ Разбанить пользователя", callback_data="admin_unban_user")],
+        ]
+    )
+
+
+def gen_params_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌡 Температура", callback_data="gen_param:temperature")],
+            [InlineKeyboardButton(text="🎯 Top-P", callback_data="gen_param:top_p")],
+            [InlineKeyboardButton(text="🔢 Max токенов", callback_data="gen_param:max_tokens")],
+            [InlineKeyboardButton(text="⛔ Штраф повторов", callback_data="gen_param:frequency_penalty")],
+            [InlineKeyboardButton(text="✨ Штраф новизны", callback_data="gen_param:presence_penalty")],
+            [InlineKeyboardButton(text="🔄 Сбросить все", callback_data="gen_param:reset_all")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_cancel")],
         ]
     )
 

@@ -19,6 +19,8 @@ class AdminStates(StatesGroup):
 
     waiting_for_view_messages_user_id = State()
 
+    waiting_for_gen_param_value = State()
+
 
 class UserStates(StatesGroup):
     waiting_for_user_prompt = State()

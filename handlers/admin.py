@@ -9,8 +9,9 @@ from aiogram.types import CallbackQuery, Message
 
 import config
 import database
+import gen_params
 from filters import IsAdmin
-from keyboards import admin_menu_kb, cancel_kb, confirm_broadcast_kb
+from keyboards import admin_menu_kb, cancel_kb, confirm_broadcast_kb, gen_params_kb
 from md_format import markdown_to_html
 from model_manager import model_manager
 from prompt_manager import prompt_manager
@@ -223,6 +224,92 @@ async def edit_prompt_finish(message: Message, state: FSMContext) -> None:
 async def edit_prompt_wrong_type(message: Message) -> None:
     await message.answer(
         "⚠️ Пришлите новый промт текстовым сообщением, либо нажмите «Отмена».",
+        reply_markup=cancel_kb(),
+    )
+
+
+# ============================================================
+#  Параметры генерации (temperature, top_p, max_tokens…)
+# ============================================================
+
+@router.callback_query(F.data == "admin_gen_params")
+async def gen_params_show(callback: CallbackQuery) -> None:
+    await callback.message.answer(
+        "🎛 <b>Параметры генерации DeepSeek</b>\n\n"
+        "Текущие значения:\n" + gen_params.describe() + "\n\n"
+        "Выберите параметр, чтобы изменить его, или сбросьте все.",
+        reply_markup=gen_params_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("gen_param:"))
+async def gen_params_pick(callback: CallbackQuery, state: FSMContext) -> None:
+    param = callback.data.split(":", 1)[1]
+
+    if param == "reset_all":
+        for name in gen_params.DEFAULTS:
+            gen_params.reset(name)
+        await callback.message.answer(
+            "✅ Все параметры генерации сброшены к дефолтным значениям.",
+            reply_markup=admin_menu_kb(),
+        )
+        await callback.answer()
+        return
+
+    label = gen_params.name_of(param)
+    current = gen_params.get(param)
+    hints = {
+        "temperature": "0..2 (больше = креативнее)",
+        "top_p": "0..1",
+        "max_tokens": "целое число (макс длина ответа)",
+        "frequency_penalty": "0..2 (наказывает повторение)",
+        "presence_penalty": "0..2 (поощряет новые темы)",
+    }
+    hint = hints.get(param, "")
+    await state.set_state(AdminStates.waiting_for_gen_param_value)
+    await state.update_data(param=param)
+    await callback.message.answer(
+        f"Введите новое значение <b>{label}</b>\n"
+        f"Текущее: <code>{current}</code>\n"
+        f"<i>{hint}</i>\n"
+        "Или «Отмена».",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_for_gen_param_value, F.text)
+async def gen_params_set_value(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    param = data.get("param")
+    await state.clear()
+
+    raw = message.text.strip()
+    if param is None:
+        await message.answer("⚠️ Параметр не найден. Попробуйте снова.", reply_markup=admin_menu_kb())
+        return
+
+    try:
+        gen_params.set_param(param, raw)
+    except (TypeError, ValueError) as e:
+        await message.answer(
+            f"⚠️ <b>{gen_params.name_of(param)}</b>: {e}\nПопробуйте снова или нажмите «Отмена».",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    await message.answer(
+        f"✅ <b>{gen_params.name_of(param)}</b> теперь: <code>{gen_params.get(param)}</code>",
+        reply_markup=admin_menu_kb(),
+    )
+    logger.info("Админ %s изменил параметр %s = %s", message.from_user.id, param, gen_params.get(param))
+
+
+@router.message(AdminStates.waiting_for_gen_param_value)
+async def gen_params_set_wrong_type(message: Message) -> None:
+    await message.answer(
+        "⚠️ Пришлите число для параметра, либо нажмите «Отмена».",
         reply_markup=cancel_kb(),
     )
 

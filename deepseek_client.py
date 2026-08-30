@@ -238,6 +238,9 @@ async def ask_deepseek(
         "messages": messages,
         "timeout": 60,
     }
+    # Пользовательские параметры генерации (temperature, top_p, max_tokens…).
+    from gen_params import base_kwargs
+    kwargs.update(base_kwargs())
     # При мультимодальных запросах (картинки) не добавляем thinking extra_body —
     # vision-модели/прокси часто его не принимают вместе с image_url.
     if use_thinking and not images:
