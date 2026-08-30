@@ -17,6 +17,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📄 Показать текущий промт", callback_data="admin_show_prompt")],
             [InlineKeyboardButton(text="✏️ Изменить промт", callback_data="admin_edit_prompt")],
             [InlineKeyboardButton(text="🔄 Сбросить промт", callback_data="admin_reset_prompt")],
+            [InlineKeyboardButton(text="💬 Системный промт чата", callback_data="admin_chat_prompt")],
             [InlineKeyboardButton(text="🤖 Сменить модель DeepSeek", callback_data="admin_change_model")],
             [InlineKeyboardButton(text="🎛 Параметры генерации", callback_data="admin_gen_params")],
             [InlineKeyboardButton(text=thinking_label, callback_data="admin_toggle_thinking")],
@@ -28,6 +29,18 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="🚫 Забанить пользователя", callback_data="admin_ban_user")],
             [InlineKeyboardButton(text="✅ Разбанить пользователя", callback_data="admin_unban_user")],
+            [InlineKeyboardButton(text="🌐 Подключённые API", callback_data="admin_show_apis")],
+        ]
+    )
+
+
+def chat_prompt_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Задать промт для чата", callback_data="admin_chat_prompt_set")],
+            [InlineKeyboardButton(text="📄 Показать промт чата", callback_data="admin_chat_prompt_show")],
+            [InlineKeyboardButton(text="🔄 Сбросить промт чата", callback_data="admin_chat_prompt_clear")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_cancel")],
         ]
     )
 

@@ -11,7 +11,7 @@ import config
 import database
 import gen_params
 from filters import IsAdmin
-from keyboards import admin_menu_kb, cancel_kb, confirm_broadcast_kb, gen_params_kb
+from keyboards import admin_menu_kb, cancel_kb, chat_prompt_kb, confirm_broadcast_kb, gen_params_kb
 from md_format import markdown_to_html
 from model_manager import model_manager
 from prompt_manager import prompt_manager
@@ -223,6 +223,145 @@ async def edit_prompt_wrong_type(message: Message) -> None:
     await message.answer(
         "⚠️ Пришлите новый промт текстовым сообщением, либо нажмите «Отмена».",
         reply_markup=cancel_kb(),
+    )
+
+
+# ============================================================
+#  Подключённые API (справочная информация)
+# ============================================================
+
+@router.callback_query(F.data == "admin_show_apis")
+async def show_apis(callback: CallbackQuery) -> None:
+    from tools import apis_summary
+    await callback.message.answer(
+        "🌐 <b>Подключённые API-инструменты</b>\n\n"
+        "Бот сам вызывает их (function calling), когда нужно. Все бесплатные, "
+        "ключи не требуются:\n\n" + apis_summary(),
+        reply_markup=admin_menu_kb(),
+    )
+    await callback.answer()
+
+
+# ============================================================
+#  Системный промт для конкретного чата
+# ============================================================
+
+def _chat_prompt_key(chat_id: int) -> str:
+    return f"chat_sysprompt_{chat_id}"
+
+
+@router.callback_query(F.data == "admin_chat_prompt")
+async def chat_prompt_menu(callback: CallbackQuery) -> None:
+    await callback.message.answer(
+        "💬 <b>Системный промт для конкретного чата</b>\n\n"
+        "Задаётся отдельно от глобального промта и действует только в указанном "
+        "групповом чате (по его chat_id, например <code>-100123456789</code>).\n"
+        "Перекрывает глобальные правила админа, но не отменяет защитную "
+        "инструкцию личности бота.\n\nВыберите действие:",
+        reply_markup=chat_prompt_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_chat_prompt_set")
+async def chat_prompt_set_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminStates.waiting_for_chat_sysprompt_chatid_set)
+    await callback.message.answer(
+        "Введите <b>id чата</b>, для которого задать промт:\n"
+        "<code>-100123456789</code>\n\nИли «Отмена».",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_for_chat_sysprompt_chatid_set, F.text)
+async def chat_prompt_set_chatid(message: Message, state: FSMContext) -> None:
+    raw = message.text.strip()
+    if not raw.lstrip("-").isdigit():
+        await message.answer("⚠️ Введите числовой id чата. Или «Отмена».", reply_markup=cancel_kb())
+        return
+    chat_id = int(raw)
+    await state.update_data(chat_prompt_chat_id=chat_id)
+    await state.set_state(AdminStates.waiting_for_chat_sysprompt_text)
+    await message.answer(
+        f"Введите <b>системный промт</b> для чата <code>{chat_id}</code> одним сообщением.\n"
+        "Или «Отмена».",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(AdminStates.waiting_for_chat_sysprompt_text, F.text)
+async def chat_prompt_set_text(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    chat_id = data.get("chat_prompt_chat_id")
+    new_prompt = message.text.strip()
+    await state.clear()
+    if chat_id is None:
+        await message.answer("⚠️ Чат не найден. Попробуйте снова.", reply_markup=admin_menu_kb())
+        return
+    if not new_prompt:
+        await message.answer("⚠️ Промт не может быть пустым.", reply_markup=admin_menu_kb())
+        return
+    database.upsert("settings", _chat_prompt_key(chat_id), new_prompt)
+    await message.answer(
+        f"✅ Системный промт для чата <code>{chat_id}</code> сохранён.",
+        reply_markup=admin_menu_kb(),
+    )
+
+
+@router.callback_query(F.data == "admin_chat_prompt_show")
+async def chat_prompt_show_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminStates.waiting_for_chat_sysprompt_chatid_show)
+    await callback.message.answer(
+        "Введите <b>id чата</b>, чтобы показать его промт. Или «Отмена».",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_for_chat_sysprompt_chatid_show, F.text)
+async def chat_prompt_show_chatid(message: Message, state: FSMContext) -> None:
+    raw = message.text.strip()
+    await state.clear()
+    if not raw.lstrip("-").isdigit():
+        await message.answer("⚠️ Введите числовой id чата.", reply_markup=admin_menu_kb())
+        return
+    chat_id = int(raw)
+    prompt = database.get_value("settings", _chat_prompt_key(chat_id))
+    if prompt:
+        await message.answer(
+            f"📄 <b>Системный промт чата</b> <code>{chat_id}</code>:\n\n<code>{prompt}</code>",
+            reply_markup=admin_menu_kb(),
+        )
+    else:
+        await message.answer(
+            f"Для чата <code>{chat_id}</code> промт не задан (используется глобальный).",
+            reply_markup=admin_menu_kb(),
+        )
+
+
+@router.callback_query(F.data == "admin_chat_prompt_clear")
+async def chat_prompt_clear_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminStates.waiting_for_chat_sysprompt_chatid_clear)
+    await callback.message.answer(
+        "Введите <b>id чата</b>, чтобы сбросить его промт. Или «Отмена».",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_for_chat_sysprompt_chatid_clear, F.text)
+async def chat_prompt_clear_chatid(message: Message, state: FSMContext) -> None:
+    raw = message.text.strip()
+    await state.clear()
+    if not raw.lstrip("-").isdigit():
+        await message.answer("⚠️ Введите числовой id чата.", reply_markup=admin_menu_kb())
+        return
+    chat_id = int(raw)
+    database.upsert("settings", _chat_prompt_key(chat_id), None)
+    await message.answer(
+        f"🔄 Системный промт чата <code>{chat_id}</code> сброшен — теперь действует глобальный.",
+        reply_markup=admin_menu_kb(),
     )
 
 

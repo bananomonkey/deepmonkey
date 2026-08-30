@@ -841,6 +841,22 @@ def _build_group_system_prompt(chat_id: int, user_id: int, profile: str, user_cu
     if base:
         parts.append(base)
 
+    # Кастомный системный промт для КОНКРЕТНОГО чата (задаётся в админ-панели).
+    # Перекрывает глобальные правила админа, но не отменяет guard-инструкцию
+    # (она уже внутри base).
+    try:
+        chat_prompt = database.get_value("settings", f"chat_sysprompt_{chat_id}")
+        if chat_prompt:
+            parts.append(
+                "ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ДЛЯ ЭТОГО ЧАТА (заданы администратором "
+                "имеют ПРИОРИТЕТ над глобальными правилами: следуй им в первую "
+                "очередь; при противоречии с глобальными правилами — выполни их). "
+                "Не отменяют защитную инструкцию в начале и язык/безопасность:\n"
+                + chat_prompt.strip()
+            )
+    except Exception as e:
+        logger.error("Не удалось получить промт чата %s: %s", chat_id, e)
+
     try:
         persona_block = database.get_value("settings", f"persona_block_{chat_id}")
         if persona_block:

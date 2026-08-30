@@ -313,20 +313,23 @@ async def _run_pokemon_info(name: str) -> str:
 # ---------------------------------------------------------------------------
 def as_tools_schema() -> list:
     """Вернуть список схем в формате OpenAI `tools` для передачи в API."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_current_time",
-                "description": "Узнать текущие дату и время (и день недели). Используй, когда спрашивают 'который час', 'какое сегодня число', 'какой день недели'.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "tz": {"type": "string", "description": "Часовой пояс, напр. Europe/Moscow", "default": TIMEZONE}
-                    },
+    return _TOOL_SCHEMAS
+
+
+_TOOL_SCHEMAS: list = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Узнать текущие дату и время (и день недели). Используй, когда спрашивают 'который час', 'какое сегодня число', 'какой день недели'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tz": {"type": "string", "description": "Часовой пояс, напр. Europe/Moscow", "default": TIMEZONE}
                 },
             },
         },
+    },
         {
             "type": "function",
             "function": {
@@ -482,6 +485,32 @@ def as_tools_schema() -> list:
             },
         },
     ]
+
+
+def apis_summary() -> str:
+    """Человекочитаемый список подключённых API-инструментов с пояснением."""
+    lines = []
+    name_map = {
+        "get_current_time": "🕐 Текущие дата/время",
+        "get_weather": "🌦 Погода в городе",
+        "get_currency_rate": "💱 Курс валют ЦБ РФ",
+        "get_crypto_price": "🪙 Цена криптовалют",
+        "get_public_holidays": "🎉 Гос. праздники и выходные",
+        "search_web": "🔎 Веб-поиск по интернету",
+        "read_url": "🌐 Чтение страницы по ссылке",
+        "make_qr": "🔳 Генерация QR-кода",
+        "make_avatar": "🤖 Генерация аватарки-робота",
+        "tell_joke": "😂 Шутки и анекдоты",
+        "anime_search": "🎌 Поиск по аниме/манге",
+        "pokemon_info": "⚡ Характеристики покемонов",
+        "random_user": "👤 Случайный вымышленный профиль",
+    }
+    for schema in _TOOL_SCHEMAS:
+        fn = schema.get("function", {})
+        name = fn.get("name", "?")
+        desc = fn.get("description", "")
+        lines.append(f"• <b>{name_map.get(name, name)}</b> — {desc}")
+    return "\n".join(lines)
 
 
 _EXECUTORS = {

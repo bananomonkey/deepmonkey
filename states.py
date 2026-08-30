@@ -21,6 +21,11 @@ class AdminStates(StatesGroup):
 
     waiting_for_gen_param_value = State()
 
+    waiting_for_chat_sysprompt_chatid_set = State()
+    waiting_for_chat_sysprompt_text = State()
+    waiting_for_chat_sysprompt_chatid_show = State()
+    waiting_for_chat_sysprompt_chatid_clear = State()
+
 
 class UserStates(StatesGroup):
     waiting_for_user_prompt = State()
