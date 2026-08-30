@@ -711,23 +711,22 @@ async def _refresh_member_profile_task(
 
 
 def _build_group_system_prompt(chat_id: int, user_id: int, profile: str, user_custom_prompt: str) -> str:
-    """Системный промт для ответов в группе: добавляем знания о участниках чата
-    (имена, портреты, кликухи из экспорта + live-профили), чтобы бот учитывал
-    личности и обстановку в группе, а не только историю диалога.
+    """Системный промт для ответов в группе.
+
+    Если для чата админ включил /persona — системным промтом становится ТОЛЬКО
+    персона (полностью вытесняя guard-инструкцию, правила админа, профиль и все
+    прочие блоки), чтобы бот без остальных инструкций общался в манере человека.
     """
-    base = build_full_system_prompt(profile, user_custom_prompt)
-
-    parts = []
-
-    # Персона чата: если админ включил /persona для этого чата, бот копирует
-    # личность конкретного участника (манера, тон, лексика). Этот блок идёт выше
-    # остального контекста, чтобы задать стиль ответа.
     try:
         persona_block = database.get_value("settings", f"persona_block_{chat_id}")
         if persona_block:
-            parts.append(persona_block)
+            return persona_block
     except Exception as e:
         logger.error("Не удалось получить персону чата %s: %s", chat_id, e)
+
+    base = build_full_system_prompt(profile, user_custom_prompt)
+
+    parts = []
 
     # Знания из экспорта чата: ростер имён + портреты + локальные кликухи.
     try:
