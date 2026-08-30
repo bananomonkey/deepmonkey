@@ -1153,6 +1153,19 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
     is_private = chat_type == "private"
     query_text = (message.text or "").strip()
 
+    user_id = message.from_user.id if message.from_user else None
+    if user_id is None:
+        return
+
+    # Фото в guest-сообщении (прикреплённое к inline-запросу @bot/prёжде) →
+    # анализируем картинку vision-моделью вместо шаблона-подсказки.
+    if not query_text or message.photo or message.animation:
+        photo = message.photo[-1] if message.photo else None
+        if photo is not None and user_settings.is_multimodal_enabled() and not user_storage.is_banned(user_id):
+            await _handle_guest_photo(message, bot, user_id, photo,
+                                      caption=(message.caption or "").strip())
+            return
+
     if not query_text:
         if is_private:
             await message.answer(
@@ -1160,14 +1173,9 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
                 "Команда <code>/start</code> — помощь."
             )
         else:
-            await _answer_guest_query_with_result(
-                message, bot, "",
-                "Напишите вопрос после @имя_бота, например:\n<code>@имя_бота что такое ИИ?</code>",
-            )
-        return
-
-    user_id = message.from_user.id if message.from_user else None
-    if user_id is None:
+            # В группе на пустой guest (гиф/фото без вопроса) молчим,
+            # чтобы не спамить шаблоном-подсказкой.
+            logger.info("GUEST пустой запрос в группе %s от %s — игнор", message.chat.id, user_id)
         return
 
     if user_storage.is_banned(user_id):
@@ -1200,6 +1208,45 @@ async def handle_guest_message(message: Message, bot: Bot) -> None:
         await _answer_guest_query_with_result(message, bot, query_text, answer)
         history = [{"role": "user", "content": query_text}, {"role": "assistant", "content": answer}]
         await reply_context_store.save_context(answer, history, user_id)
+
+
+async def _handle_guest_photo(message: Message, bot: Bot, user_id: int, photo, caption: str) -> None:
+    """Анализ фото, присланного в guest-сообщении (@bot + фото в инлайн-запросе)."""
+    if not await rate_limiter.allow(user_id):
+        return
+
+    try:
+        await user_storage.touch(user_id, message.from_user.username, message.from_user.full_name)
+    except Exception:
+        pass
+
+    try:
+        data_url = await _download_image_data(bot, photo)
+    except Exception as e:
+        logger.error("GUEST фото: не удалось скачать (%s)", e)
+        await _answer_guest_query_with_result(message, bot, caption or "", "⚠️ Не удалось обработать фото.")
+        return
+
+    question = caption or "Что на этом фото?"
+    profile = user_storage.get_profile(user_id)
+    user_custom_prompt = user_settings.get_system_prompt(user_id)
+    system_prompt = build_full_system_prompt(profile, user_custom_prompt)
+
+    model_id = MODEL_MAP["vision"]
+    try:
+        answer = await asyncio.wait_for(
+            ask_deepseek_with_search(
+                system_prompt, question, model=model_id, use_thinking=False, images=[data_url],
+            ),
+            timeout=45,
+        )
+    except asyncio.TimeoutError:
+        answer = "⚠️ Превышен таймаут анализа фото."
+    except Exception as e:
+        logger.error("GUEST фото: ошибка DeepSeek (%s)", e)
+        answer = "⚠️ Произошла ошибка при анализе фото. Попробуйте позже."
+
+    await _answer_guest_query_with_result(message, bot, question, answer)
 
 
 # --- Fallback: chosen_inline_result (когда Guest Mode не активен) ---
