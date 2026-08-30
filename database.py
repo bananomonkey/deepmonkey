@@ -299,3 +299,26 @@ def self_test() -> str:
         return "persistence self-test: OK" if ok else "persistence self-test: FAILED"
     except Exception as e:
         return f"persistence self-test: ERROR {e}"
+
+
+# ============================================================
+#  Персона чата: бот в конкретной группе копирует личность участника
+# ============================================================
+
+PERSONA_TABLE = "settings"
+_PERSONA_KEY_PREFIX = "persona_"
+
+
+def set_chat_persona(chat_id: int, user_id: int) -> None:
+    """Задать: в чате chat_id бот отвечает в манере пользователя user_id."""
+    upsert(PERSONA_TABLE, f"{_PERSONA_KEY_PREFIX}{chat_id}", int(user_id))
+
+
+def clear_chat_persona(chat_id: int) -> None:
+    """Убрать персону для чата (бот снова отвечает как сам)."""
+    upsert(PERSONA_TABLE, f"{_PERSONA_KEY_PREFIX}{chat_id}", None)
+
+
+def get_chat_persona(chat_id: int):
+    """user_id персоны для чата, либо None."""
+    return get_value(PERSONA_TABLE, f"{_PERSONA_KEY_PREFIX}{chat_id}")

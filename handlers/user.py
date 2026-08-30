@@ -719,6 +719,16 @@ def _build_group_system_prompt(chat_id: int, user_id: int, profile: str, user_cu
 
     parts = []
 
+    # Персона чата: если админ включил /persona для этого чата, бот копирует
+    # личность конкретного участника (манера, тон, лексика). Этот блок идёт выше
+    # остального контекста, чтобы задать стиль ответа.
+    try:
+        persona_block = database.get_value("settings", f"persona_block_{chat_id}")
+        if persona_block:
+            parts.append(persona_block)
+    except Exception as e:
+        logger.error("Не удалось получить персону чата %s: %s", chat_id, e)
+
     # Знания из экспорта чата: ростер имён + портреты + локальные кликухи.
     try:
         knowledge_note = member_knowledge.build_group_context(chat_id, user_id)

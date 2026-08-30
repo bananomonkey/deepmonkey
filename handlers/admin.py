@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import config
+import database
 from filters import IsAdmin
 from keyboards import admin_menu_kb, cancel_kb, confirm_broadcast_kb
 from md_format import markdown_to_html
@@ -35,6 +36,95 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
         "Выберите действие:",
         reply_markup=admin_menu_kb(),
     )
+
+
+# ============================================================
+#  Персона чата — бот копирует личность участника группы
+# ============================================================
+
+@router.message(Command("persona"))
+async def cmd_persona(message: Message) -> None:
+    """/persona <user_id> — в этой группе бот копирует личность указанного юзера.
+    /persona сброс / /persona off — вернуть бота к себе.
+    /persona — показать текущую персону чата."""
+    chat_id = message.chat.id
+    args = (message.text or "").split(maxsplit=1)
+    body = (args[1] if len(args) > 1 else "").strip()
+
+    if not body:
+        current = database.get_chat_persona(chat_id)
+        if current:
+            await message.answer(
+                f"👤 В этом чате персональность: user_id <code>{current}</code>.\n"
+                "Сменить: <code>/persona &lt;user_id&gt;</code>. Сбросить: <code>/persona сброс</code>."
+            )
+        else:
+            await message.answer(
+                "В этом чате персональность не задана — бот отвечает как сам.\n"
+                "Задать: <code>/persona &lt;user_id&gt;</code> (ID участника, чью личность копировать)."
+            )
+        return
+
+    low = body.lower()
+    if low in ("сброс", "off", "выкл", "нет", "убрать"):
+        database.clear_chat_persona(chat_id)
+        database.upsert("settings", f"persona_block_{chat_id}", None)
+        await message.answer("✅ Персональность чата сброшена. Теперь бот отвечает как сам.")
+        return
+
+    if not body.lstrip("-").isdigit():
+        await message.answer("⚠️ Укажите числовой <code>user_id</code> участника, чью личность копировать.\n"
+                             "Например: <code>/persona 8065762277</code>. Для сброса: <code>/persona сброс</code>.")
+        return
+
+    target_id = int(body)
+    database.set_chat_persona(chat_id, target_id)
+    await message.answer(
+        f"✅ Собираю личность участника user_id <code>{target_id}</code> для этого чата…",
+    )
+    ok, detail = await _build_persona_block(chat_id, target_id)
+    if ok:
+        await message.answer(
+            f"✅ В этом чате бот теперь отвечает в манере участника <code>{target_id}</code>.\n"
+            f"{detail}\nСбросить: <code>/persona сброс</code>."
+        )
+    else:
+        database.clear_chat_persona(chat_id)
+        await message.answer(f"⚠️ Не удалось собрать личность: {detail}")
+
+
+async def _build_persona_block(chat_id: int, target_id: int) -> tuple[bool, str]:
+    """Генерирует и сохраняет блок персоны (описание + образец сообщений) в БД."""
+    try:
+        import group_sessions
+        from deepseek_client import describe_personality
+
+        texts = group_sessions.get_full_member_log(chat_id, target_id, limit=200)
+        if len(texts) < 10:
+            return False, "слишком мало сообщений (их меньше 10)."
+
+        name = group_sessions.member_display_name(chat_id, target_id) or str(target_id)
+        description = await describe_personality(f"(@{name})", texts[-150:])
+        sample = "\n".join(f"- {t}" for t in texts[-25:])
+
+        block = (
+            "ТЫ СЕЙЧАС ДОЛЖЕН ОБЩАТЬСЯ В МАНЕРЕ УКАЗАННОГО НИЖЕ ЧЕЛОВЕКА ИЗ ЭТОГО ЧАТА. "
+            "Ты остаёшься собой (ботом с id администратора), но полностью копируешь его "
+            "манеру речи, лексику, тон, манеру общения, характер, остроумие и привычки. "
+            "Отвечай так, как отвечал бы этот человек: его манера, его слова, его отношение. "
+            "Помни, что ты не обязан отвечать длинно — отвечай в точности в его стиле.\n\n"
+            f"### Человек: {name} (user_id {target_id})\n"
+            f"### Описание его личности:\n{description}\n"
+            "### Примеры его реальных сообщений из чата (копируй их стиль и манеру):\n"
+            f"{sample}"
+        )
+        database.upsert("settings", f"persona_block_{chat_id}", block)
+        logger.info("PERSONA блок собран чат=%s target=%s name=%r msg=%d",
+                    chat_id, target_id, name, len(texts))
+        return True, f"Источников сообщений: {len(texts)}."
+    except Exception as e:
+        logger.error("Не удалось собрать персону чата %s: %s", chat_id, e)
+        return False, str(e)
 
 
 # ============================================================
