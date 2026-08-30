@@ -56,14 +56,15 @@ async def cmd_persona(message: Message) -> None:
     is_private = message.chat.type == "private"
     current_chat_id = message.chat.id
 
-    args = (message.text or "").split()
+    # args — аргументы ПОСЛЕ '/persona' (первый элемент это сама команда).
+    args = (message.text or "").split()[1:]
     if not args:
         await message.answer("Использование: <code>/persona &lt;user_id&gt; [chat_id]</code>")
         return
     arg1 = args[0]
 
     # /persona — показать персону текущего чата
-    if len(args) == 1:
+    if len(args) == 0:
         current = database.get_chat_persona(current_chat_id)
         if current:
             await message.answer(
