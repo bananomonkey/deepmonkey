@@ -44,53 +44,85 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("persona"))
 async def cmd_persona(message: Message) -> None:
-    """/persona <user_id> — в этой группе бот копирует личность указанного юзера.
-    /persona сброс / /persona off — вернуть бота к себе.
-    /persona — показать текущую персону чата."""
-    chat_id = message.chat.id
-    args = (message.text or "").split(maxsplit=1)
-    body = (args[1] if len(args) > 1 else "").strip()
+    """/persona <user_id> [chat_id] — включить в чате chat_id личность пользователя user_id.
 
-    if not body:
-        current = database.get_chat_persona(chat_id)
+    Вызов в ЛС с ботом (или в самой группе).
+    - <user_id> — id участника из базы, чью личность копировать;
+    - [chat_id] — id группового чата, где включить. Если не указан и команда
+      вызвана в группе — применяется к текущему чату; если в ЛС без chat_id — ошибка.
+
+    /persona сброс [chat_id] — вернуть бота к себе.
+    /persona — показать персону текущего чата."""
+    is_private = message.chat.type == "private"
+    current_chat_id = message.chat.id
+
+    args = (message.text or "").split()
+    if not args:
+        await message.answer("Использование: <code>/persona &lt;user_id&gt; [chat_id]</code>")
+        return
+    arg1 = args[0]
+
+    # /persona — показать персону текущего чата
+    if len(args) == 1:
+        current = database.get_chat_persona(current_chat_id)
         if current:
             await message.answer(
-                f"👤 В этом чате персональность: user_id <code>{current}</code>.\n"
-                "Сменить: <code>/persona &lt;user_id&gt;</code>. Сбросить: <code>/persona сброс</code>."
+                f"👤 В чате <code>{current_chat_id}</code>: персональность user_id <code>{current}</code>.\n"
+                "Сменить: <code>/persona &lt;user_id&gt; &lt;chat_id&gt;</code>. Сбросить: <code>/persona сброс &lt;chat_id&gt;</code>."
             )
         else:
             await message.answer(
                 "В этом чате персональность не задана — бот отвечает как сам.\n"
-                "Задать: <code>/persona &lt;user_id&gt;</code> (ID участника, чью личность копировать)."
+                "Задать из ЛС: <code>/persona &lt;user_id&gt; &lt;chat_id&gt;</code>."
             )
         return
 
-    low = body.lower()
-    if low in ("сброс", "off", "выкл", "нет", "убрать"):
+    # /persona сброс [chat_id]
+    if arg1.lower() in ("сброс", "off", "выкл", "нет", "убрать"):
+        if len(args) >= 2 and args[1].lstrip("-").isdigit():
+            chat_id = int(args[1])
+        elif is_private:
+            await message.answer("Укажите чат: <code>/persona сброс &lt;chat_id&gt;</code>")
+            return
+        else:
+            chat_id = current_chat_id
         database.clear_chat_persona(chat_id)
         database.upsert("settings", f"persona_block_{chat_id}", None)
-        await message.answer("✅ Персональность чата сброшена. Теперь бот отвечает как сам.")
+        await message.answer(f"✅ Персональность чата <code>{chat_id}</code> сброшена. Теперь бот отвечает как сам.")
         return
 
-    if not body.lstrip("-").isdigit():
-        await message.answer("⚠️ Укажите числовой <code>user_id</code> участника, чью личность копировать.\n"
-                             "Например: <code>/persona 8065762277</code>. Для сброса: <code>/persona сброс</code>.")
+    # /persona <user_id> [chat_id]
+    if not arg1.lstrip("-").isdigit():
+        await message.answer(
+            "⚠️ Первый аргумент — числовой <code>user_id</code> участника из базы.\n"
+            "Формат: <code>/persona &lt;user_id&gt; &lt;chat_id&gt;</code>."
+        )
         return
 
-    target_id = int(body)
+    target_id = int(arg1)
+    if len(args) >= 2 and args[1].lstrip("-").isdigit():
+        chat_id = int(args[1])
+    elif is_private:
+        await message.answer(
+            "⚠️ В ЛС нужно указать id чата: <code>/persona &lt;user_id&gt; &lt;chat_id&gt;</code>"
+        )
+        return
+    else:
+        chat_id = current_chat_id
+
     database.set_chat_persona(chat_id, target_id)
     await message.answer(
-        f"✅ Собираю личность участника user_id <code>{target_id}</code> для этого чата…",
+        f"✅ Собираю личность участника <code>{target_id}</code> для чата <code>{chat_id}</code>…",
     )
     ok, detail = await _build_persona_block(chat_id, target_id)
     if ok:
         await message.answer(
-            f"✅ В этом чате бот теперь отвечает в манере участника <code>{target_id}</code>.\n"
-            f"{detail}\nСбросить: <code>/persona сброс</code>."
+            f"✅ В чате <code>{chat_id}</code> бот теперь отвечает в манере участника <code>{target_id}</code>.\n"
+            f"{detail}\nСбросить: <code>/persona сброс {chat_id}</code>."
         )
     else:
         database.clear_chat_persona(chat_id)
-        await message.answer(f"⚠️ Не удалось собрать личность: {detail}")
+        await message.answer(f"⚠️ Не удалось собрать личность для чата {chat_id}: {detail}")
 
 
 async def _build_persona_block(chat_id: int, target_id: int) -> tuple[bool, str]:
