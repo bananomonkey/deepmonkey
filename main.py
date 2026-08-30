@@ -76,14 +76,13 @@ async def main() -> None:
     allowed = [
         UpdateType.MESSAGE,
         UpdateType.CALLBACK_QUERY,
+        UpdateType.INLINE_QUERY,
+        UpdateType.CHOSEN_INLINE_RESULT,
+        UpdateType.GUEST_MESSAGE,
     ]
 
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("Бот запущен. Allowed updates: %s", [u.value for u in allowed])
-    logger.info(
-        "РЕЖИМ: inline/Guest Mode отключён. Пинг @имя_бота в группе -> обычный "
-        "реплай в чат; ответы на реплаи к сообщениям бота -> продолжение диалога."
-    )
     logger.info("База данных (SQLite): %s", config.DB_FILE_PATH)
     logger.info("Диагностика БД: %s", database.diagnose())
     logger.info("%s", database.self_test())
