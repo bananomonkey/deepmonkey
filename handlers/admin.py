@@ -134,7 +134,7 @@ async def _build_persona_block(chat_id: int, target_id: int) -> tuple[bool, str]
     без префикса. chat_id используется как «куда» применить персону.
     """
     try:
-        import group_sessions
+        from group_sessions import group_sessions
         from deepseek_client import describe_personality
 
         texts = database.get_member_log_all_for_user_global(target_id, limit=200)
