@@ -614,6 +614,16 @@ async def handle_group_message(message: Message, bot: Bot) -> None:
 
     if _is_bot_mentioned(message, bot):
         await _handle_group_mention(message, bot, user_id)
+        return
+
+    # Обычное сообщение чата (не про бота): запоминаем как фон разговора,
+    # чтобы бот не терял контекст между своими вызовами.
+    if message.text:
+        await group_sessions.append_ambient(
+            message.chat.id,
+            message.from_user.full_name or message.from_user.username or "кто-то",
+            message.text,
+        )
 
 
 async def _download_image_data(bot: Bot, photo) -> str:
@@ -622,6 +632,29 @@ async def _download_image_data(bot: Bot, photo) -> str:
     file = await bot.get_file(photo.file_id)
     data = (await bot.download_file(file.file_path)).read()
     return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+
+
+async def _photo_from_message(message: Message, bot: Bot) -> str | None:
+    """Вернуть data URL фото из самого сообщения ИЛИ из сообщения, на которое
+    отвечает реплай (чтобы бот видел картинку, когда его пингуют в ответе на
+    чужое фото). Возвращает None, если фото нет ни там, ни там."""
+    try:
+        photo = None
+        if message.photo:
+            photo = message.photo[-1]
+        elif (
+            message.reply_to_message
+            and getattr(message.reply_to_message, "photo", None)
+        ):
+            photo = message.reply_to_message.photo[-1]
+        if photo is None:
+            return None
+        if not user_settings.is_multimodal_enabled():
+            return None
+        return await _download_image_data(bot, photo)
+    except Exception as e:
+        logger.error("Не удалось извлечь фото для vision: %s", e)
+        return None
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.photo)
@@ -747,7 +780,12 @@ def _build_group_system_prompt(chat_id: int, user_id: int, profile: str, user_cu
     try:
         knowledge_note = member_knowledge.build_group_context(chat_id, user_id)
         if knowledge_note:
-            parts.append(knowledge_note)
+            parts.append(
+                knowledge_note
+                + "\n\nВАЖНО: эта справка об участниках — только справочник. "
+                "НЕ поднимай темы и НЕ упоминай сведения из неё в ответах, пока "
+                "собеседник сам о них не спросит. Отвечай строго по вопросу."
+            )
     except Exception as e:
         logger.error("Не удалось собрать знания об участниках для группы %s: %s", chat_id, e)
 
@@ -784,6 +822,14 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
     question = message.text or message.caption or ""
+
+    photo_data_url = await _photo_from_message(message, bot)
+    if photo_data_url:
+        question = (question or "").strip() or "Что на этом фото?"
+        if question == "Что на этом фото?" and message.reply_to_message \
+                and message.reply_to_message.caption:
+            question = message.reply_to_message.caption
+
     history = group_sessions.get_history(message.chat.id)
 
     chat_context = await _maybe_chat_context(question, message.chat.id)
@@ -794,14 +840,15 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
         message.chat.id, user_id, profile, user_custom_prompt,
     )
 
-    model_id = user_settings.get_model_id(user_id)
-    use_thinking = user_settings.use_thinking(user_id)
+    model_id = MODEL_MAP["vision"] if photo_data_url else user_settings.get_model_id(user_id)
+    use_thinking = False if photo_data_url else user_settings.use_thinking(user_id)
 
     try:
         answer = await ask_deepseek_with_search(
             system_prompt, question, history=history,
             model=model_id, use_thinking=use_thinking,
             chat_context=chat_context,
+            images=[photo_data_url] if photo_data_url else None,
         )
     except Exception as e:
         logger.error("Ошибка при ответе в группе: %s", e)
@@ -809,7 +856,8 @@ async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: 
 
     await _reply_with_quote(message, bot, question, answer)
 
-    await group_sessions.append_message(message.chat.id, "user", question)
+    content = f"[фото] {question}" if photo_data_url else question
+    await group_sessions.append_message(message.chat.id, "user", content)
     await group_sessions.append_message(message.chat.id, "assistant", answer)
 
 
@@ -936,6 +984,13 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
     if personality is not None:
         return
 
+    photo_data_url = await _photo_from_message(message, bot)
+    if photo_data_url:
+        question = (question or "").strip() or "Что на этом фото?"
+        if question == "Что на этом фото?" and message.reply_to_message \
+                and message.reply_to_message.caption:
+            question = message.reply_to_message.caption
+
     history = group_sessions.get_history(message.chat.id)
 
     chat_context = await _maybe_chat_context(question, message.chat.id)
@@ -946,14 +1001,15 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
         message.chat.id, user_id, profile, user_custom_prompt,
     )
 
-    model_id = user_settings.get_model_id(user_id)
-    use_thinking = user_settings.use_thinking(user_id)
+    model_id = MODEL_MAP["vision"] if photo_data_url else user_settings.get_model_id(user_id)
+    use_thinking = False if photo_data_url else user_settings.use_thinking(user_id)
 
     try:
         answer = await ask_deepseek_with_search(
             system_prompt, question, history=history,
             model=model_id, use_thinking=use_thinking,
             chat_context=chat_context,
+            images=[photo_data_url] if photo_data_url else None,
         )
     except Exception as e:
         logger.error("Ошибка при ответе на упоминание в группе: %s", e)
@@ -961,7 +1017,8 @@ async def _handle_group_mention(message: Message, bot: Bot, user_id: int) -> Non
 
     await _reply_with_quote(message, bot, question, answer)
 
-    await group_sessions.append_message(message.chat.id, "user", question)
+    content = f"[фото] {question}" if photo_data_url else question
+    await group_sessions.append_message(message.chat.id, "user", content)
     await group_sessions.append_message(message.chat.id, "assistant", answer)
 
 

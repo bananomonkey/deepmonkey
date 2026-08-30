@@ -55,7 +55,7 @@ PROFILE_UPDATE_EVERY_N_MESSAGES = int(os.getenv("PROFILE_UPDATE_EVERY_N_MESSAGES
 
 # --- История диалога ---
 # Сколько последних пар (пользователь/ассистент) хранить и отправлять в DeepSeek как контекст.
-HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "12"))
+HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "40"))
 
 # --- Мультичаты (личка) ---
 MAX_CHATS_PER_USER = int(os.getenv("MAX_CHATS_PER_USER", "5"))

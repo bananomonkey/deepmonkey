@@ -70,6 +70,22 @@ class GroupChatSessions:
                 rec["member_log"] = rec["member_log"][-MEMBER_LOG_LIMIT:]
             await self._save_to_db()
 
+    async def append_ambient(self, chat_id: int, name: str, text: str) -> None:
+        """Добавить обычное сообщение чата (не адресованное боту) в контекстную
+        историю как «фон разговора», чтобы при следующем вызове бот помнил,
+        о чём шла речь вокруг, а не только свои собственные ответы.
+        """
+        async with self._lock:
+            rec = self._ensure(chat_id)
+            rec["history"].append({
+                "role": "user",
+                "content": f"[{name or 'кто-то'}]: {text}",
+            })
+            max_messages = self.max_history_turns * 2
+            if len(rec["history"]) > max_messages:
+                rec["history"] = rec["history"][-max_messages:]
+            await self._save_to_db()
+
     def get_member_log(self, chat_id: int, user_id: int, limit: int = 30) -> List[dict]:
         """Последние сообщения конкретного участника из этого чата."""
         rec = self._data.get(str(chat_id))
