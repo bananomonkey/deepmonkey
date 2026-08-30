@@ -213,6 +213,39 @@ async def _ai_decides_search(
         return None
 
 
+_IMG_URL_MARKERS = ("QRIMG=", "AVATARIMG=", "PICIMG=")
+
+
+def _extract_image_urls_from_results(results: list) -> List[str]:
+    """Вытащить URL сгенерированных картинок из текстов результатов инструментов."""
+    urls: List[str] = []
+    for r in results:
+        if isinstance(r, Exception):
+            continue
+        text = str(r)
+        for marker in _IMG_URL_MARKERS:
+            start = 0
+            while True:
+                idx = text.find(marker, start)
+                if idx == -1:
+                    break
+                url = text[idx + len(marker):].split(" ")[0].split("\n")[0].strip()
+                if url.startswith("http") and url not in urls:
+                    urls.append(url)
+                start = idx + len(marker)
+    return urls
+
+
+def _attach_tool_images(answer: str, image_urls: List[str]) -> str:
+    if not image_urls:
+        return answer
+    missing = [u for u in image_urls if u not in answer]
+    if not missing:
+        return answer
+    block = "\n\n" + "\n".join(f"[Картинка]({u})" for u in missing)
+    return answer.strip() + block
+
+
 async def ask_deepseek(
     system_prompt: str,
     user_text: str,
@@ -287,17 +320,18 @@ async def ask_deepseek(
         return None
 
     MAX_TOOL_ROUNDS = 4
+    collected_images: List[str] = []
     for _round in range(MAX_TOOL_ROUNDS):
         msg = await _send()
         if msg is None:
-            return FALLBACK_ANSWER
+            return _attach_tool_images(FALLBACK_ANSWER, collected_images)
 
         tool_calls = getattr(msg, "tool_calls", None)
         if not tool_calls:
             answer = msg.content
             if answer and answer.strip():
-                return answer.strip()
-            return FALLBACK_ANSWER
+                return _attach_tool_images(answer.strip(), collected_images)
+            return _attach_tool_images(FALLBACK_ANSWER, collected_images)
 
         # Исполняем все вызванные инструменты параллельно.
         calls = [
@@ -309,6 +343,7 @@ async def ask_deepseek(
             *(run_tool(name, args or {}) for name, args in calls),
             return_exceptions=True,
         )
+        collected_images.extend(_extract_image_urls_from_results(results))
 
         kwargs["messages"].append({
             "role": "assistant",
@@ -335,7 +370,7 @@ async def ask_deepseek(
             })
 
     # Превышен лимит итераций инструментов — вернуть последний текст, если есть.
-    return msg.content and msg.content.strip() or FALLBACK_ANSWER
+    return _attach_tool_images(msg.content and msg.content.strip() or FALLBACK_ANSWER, collected_images)
 
 
 async def ask_deepseek_with_search(
