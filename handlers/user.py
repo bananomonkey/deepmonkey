@@ -565,6 +565,18 @@ def _is_about_person(question: str) -> bool:
     return any(w in q for w in about_words)
 
 
+def _is_about_self(question: str) -> bool:
+    """Похоже ли, что вопрос про самого отправителя ('кто я', 'что ты обо мне знаешь')."""
+    q = question.lower()
+    self_words = [
+        "кто я", "кто это я", "что ты обо мне знаешь", "расскажи обо мне",
+        "что ты знаешь обо мне", "расскажи кто я", "кем я", "что ты видишь во мне",
+        "что можешь сказать обо мне", "какой я", "что ты про меня знаешь",
+        "расскажи про меня", "опиши меня",
+    ]
+    return any(w in q for w in self_words)
+
+
 def _brevity_request(text: str) -> str:
     """Если в вопросе просят коротко/одним словом — вернуть инструкцию длины.
 
@@ -805,26 +817,37 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
     """
     chat_id = message.chat.id
 
-    # Кандидат №1: реплай на сообщение другого участника (не бота).
-    target_id = None
-    target_name = None
-    reply_target = _reply_target_user(message, bot)
-    if reply_target:
-        target_id = reply_target.from_user.id
-        target_name = reply_target.from_user.full_name or reply_target.from_user.username or str(target_id)
+    # «Кто я» — бот рассказывает про самого отправителя.
+    about_self = _is_about_self(question)
+    if about_self:
+        target_id = user_id
+        target_name = (
+            message.from_user.full_name
+            or message.from_user.username
+            or str(user_id)
+        )
+        uname = None
+    else:
+        # Кандидат №1: реплай на сообщение другого участника (не бота).
+        target_id = None
+        target_name = None
+        reply_target = _reply_target_user(message, bot)
+        if reply_target:
+            target_id = reply_target.from_user.id
+            target_name = reply_target.from_user.full_name or reply_target.from_user.username or str(target_id)
 
-    # Кандидат №2: @username в тексте вопроса.
-    uname = _mentioned_username(message, bot)
-    if uname:
-        member_id = group_sessions.find_member_by_username(chat_id, uname)
-        if member_id is not None:
-            target_id = member_id
-            target_name = group_sessions.member_display_name(chat_id, member_id) or uname
+        # Кандидат №2: @username в тексте вопроса.
+        uname = _mentioned_username(message, bot)
+        if uname:
+            member_id = group_sessions.find_member_by_username(chat_id, uname)
+            if member_id is not None:
+                target_id = member_id
+                target_name = group_sessions.member_display_name(chat_id, member_id) or uname
 
     if target_id is None:
         logger.info("PERSONA: цель не найдена chat=%s uname=%r", chat_id, uname)
         return False
-    if not _is_about_person(question):
+    if not _is_about_person(question) and not about_self:
         logger.info("PERSONA: вопрос не о личности chat=%s target=%s q=%r", chat_id, target_id, question)
         return False
 
@@ -832,7 +855,7 @@ async def _handle_personality_request(message: Message, bot: Bot, user_id: int, 
 
     await bot.send_chat_action(chat_id, ChatAction.TYPING)
 
-    if target_id == user_id:
+    if target_id == user_id and not about_self:
         await _reply_with_quote(message, bot, question, "Ты спрашиваешь про себя — а самого себя видно со стороны лучше :)")
         return True
 
