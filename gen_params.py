@@ -6,12 +6,15 @@ logger = logging.getLogger(__name__)
 
 TABLE = "settings"
 
+# Человеческие дефолты: чуть выше температура (живее/эмоциональнее), умеренный
+# top_p, небольшой штраф повторов (чтобы не тавтология). Сделано, чтобы бот по
+# умолчанию звучал как живой человек, а не как сухой ассистент.
 DEFAULTS = {
-    "temperature": 1.0,
-    "top_p": 1.0,
+    "temperature": 1.3,
+    "top_p": 0.9,
     "max_tokens": 4096,
-    "frequency_penalty": 0.0,
-    "presence_penalty": 0.0,
+    "frequency_penalty": 0.4,
+    "presence_penalty": 0.3,
 }
 
 _KEY = "gen_{}"
