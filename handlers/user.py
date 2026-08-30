@@ -725,20 +725,23 @@ async def _refresh_member_profile_task(
 def _build_group_system_prompt(chat_id: int, user_id: int, profile: str, user_custom_prompt: str) -> str:
     """Системный промт для ответов в группе.
 
-    Если для чата админ включил /persona — системным промтом становится ТОЛЬКО
-    персона (полностью вытесняя guard-инструкцию, правила админа, профиль и все
-    прочие блоки), чтобы бот без остальных инструкций общался в манере человека.
+    Всегда собираем базовый промт (guard + правила админа + роль/личность
+    пользователя + профиль). Если для чата задан /persona — добавляем к нему
+    блок-образец МАНЕРЫ реального человека (его лексика/стиль), НЕ заменяя
+    личность/роль бота (например роль «Такса» остаётся сверху).
     """
-    try:
-        persona_block = database.get_value("settings", f"persona_block_{chat_id}")
-        if persona_block:
-            return persona_block
-    except Exception as e:
-        logger.error("Не удалось получить персону чата %s: %s", chat_id, e)
-
     base = build_full_system_prompt(profile, user_custom_prompt)
 
     parts = []
+    if base:
+        parts.append(base)
+
+    try:
+        persona_block = database.get_value("settings", f"persona_block_{chat_id}")
+        if persona_block:
+            parts.append(persona_block)
+    except Exception as e:
+        logger.error("Не удалось получить персону чата %s: %s", chat_id, e)
 
     # Знания из экспорта чата: ростер имён + портреты + локальные кликухи.
     try:
@@ -760,8 +763,8 @@ def _build_group_system_prompt(chat_id: int, user_id: int, profile: str, user_cu
             )
 
     if parts:
-        return base + "\n\n" + "\n\n".join(parts)
-    return base
+        return "\n\n".join(p for p in parts if p)
+    return ""
 
 
 async def _handle_group_reply_continuation(message: Message, bot: Bot, user_id: int) -> None:
