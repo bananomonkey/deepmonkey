@@ -40,6 +40,48 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
 
 
 # ============================================================
+#  Удаление сообщения бота по id
+# ============================================================
+
+@router.message(Command("del"))
+async def cmd_delete_message(message: Message, bot: Bot) -> None:
+    """Удалить сообщение по id чата и id сообщения.
+
+    /del <chat_id> <message_id> — удалить сообщение в указанном чате.
+    /del <message_id>           — вызванное в группе/ЛС, удалить сообщение в текущем чате.
+    """
+    args = (message.text or "").split()
+    if len(args) < 2:
+        await message.answer(
+            "Использование:\n"
+            "<code>/del &lt;chat_id&gt; &lt;message_id&gt;</code> — удалить в указанном чате\n"
+            "<code>/del &lt;message_id&gt;</code> — в текущем чате (группа/ЛС)"
+        )
+        return
+
+    try:
+        if len(args) >= 3:
+            chat_id = int(args[1])
+            msg_id = int(args[2])
+        else:
+            chat_id = message.chat.id
+            msg_id = int(args[1])
+    except ValueError:
+        await message.answer("⚠️ chat_id и message_id должны быть числами.")
+        return
+
+    try:
+        await bot.delete_message(chat_id, msg_id)
+        await message.answer(f"✅ Сообщение <code>{msg_id}</code> удалено.")
+        logger.info("Админ %s удалил сообщение %s в чате %s", message.from_user.id, msg_id, chat_id)
+    except TelegramBadRequest as e:
+        await message.answer(f"⚠️ Не удалось удалить сообщение: {e}")
+    except Exception as e:
+        logger.error("Не удалось удалить сообщение %s в чате %s: %s", msg_id, chat_id, e)
+        await message.answer(f"⚠️ Ошибка удаления: {e}")
+
+
+# ============================================================
 #  Персона чата — бот копирует личность участника группы
 # ============================================================
 
@@ -152,10 +194,17 @@ async def _build_persona_block(chat_id: int, target_id: int) -> tuple[bool, str]
             "человека {name} из этого чата: копируй его лексику, сленг, тон, манеру "
             "общения, юмор и характерные фразы. Отвечай так, как говорил бы он, "
             "но оставайся собой (твоя роль выше). Используй его живую, разговорную "
-            "манеру. Ниже его реальные сообщения — ориентируйся на их стиль и слова.\n\n"
+            "манеру, НО отвечай строго на заданный вопрос. Ниже его реальные "
+            "сообщения — ориентируйся ТОЛЬКО на их СТИЛЬ и слова, а НЕ на их "
+            "содержание/темы. Копируй манеру речи, но НЕ бери и НЕ поднимай из них "
+            "конкретные темы, личности, события или истории (например политику, "
+            "известных людей, прошлые разговоры), если собеседник о них не "
+            "спрашивал. Не повторяй его фактические сообщения, а отвечай на "
+            "поставленный вопрос его стилем.\n\n"
             f"### Образец манеры: {name} (user_id {target_id})\n"
             f"### Черты его характера:\n{description}\n"
-            "### Примеры ЕГО реальных сообщений из чата (подражай их стилю, словам и тону):\n"
+            "### Примеры ЕГО реальных сообщений из чата (подражай их стилю, словам и тону, "
+            "но НЕ поднимай их темы и содержание):\n"
             f"{sample}"
         )
         database.upsert("settings", f"persona_block_{chat_id}", block)
