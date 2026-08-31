@@ -13,10 +13,6 @@ FALLBACK_ANSWER = "⚠️ Произошла ошибка при обращен�
 _BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
-def _model_with_key(model: str) -> str:
-    return f"{model}:generateContent?key={config.GEMINI_API_KEY}"
-
-
 def _to_gemini_messages(
     messages: List[Dict[str, str]],
 ) -> List[Dict]:
@@ -69,27 +65,31 @@ async def ask_gemini(
     collected_images: List[str] = []
 
     async def _send(contents) -> dict | None:
-        # Один вызов с ретраями на транзиентные сбои.
-        last_exc = None
-        for attempt in range(3):
-            try:
-                url = _BASE + "/" + _model_with_key(effective_model)
-                payload: Dict = {"contents": contents, "generationConfig": {}}
-                if system_prompt:
-                    payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
-                tools = as_gemini_tool_schema() if not images else None
-                if tools:
-                    payload["tools"] = [{"functionDeclarations": tools}]
-                async with httpx.AsyncClient(timeout=60) as client:
-                    resp = await client.post(url, json=payload)
-                    resp.raise_for_status()
-                    return resp.json()
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
-                last_exc = e
-                if attempt < 2:
-                    await asyncio.sleep(0.8 * (attempt + 1))
-                    continue
-        logger.error("Gemini API ошибка после ретраев: %s", last_exc)
+        # Один вызов с ретраями на транзиентные сбои и fallback на второй ключ.
+        keys = [k for k in (config.GEMINI_API_KEY, config.GEMINI_API_KEY_2) if k]
+        if not keys:
+            logger.error("Нет API-ключей Gemini")
+            return None
+        payload: Dict = {"contents": contents, "generationConfig": {}}
+        if system_prompt:
+            payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+        tools = as_gemini_tool_schema() if not images else None
+        if tools:
+            payload["tools"] = [{"functionDeclarations": tools}]
+        for key in keys:
+            url = _BASE + "/" + f"{effective_model}:generateContent?key={key}"
+            for attempt in range(3):
+                try:
+                    async with httpx.AsyncClient(timeout=60) as client:
+                        resp = await client.post(url, json=payload)
+                        resp.raise_for_status()
+                        return resp.json()
+                except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
+                    if attempt < 2:
+                        await asyncio.sleep(0.8 * (attempt + 1))
+                        continue
+                    logger.warning("Gemini API (ключ %s...) ошибка: %s", key[-4:], e)
+        logger.error("Gemini API ошибка на всех ключах/ретраях")
         return None
 
     # Поезд сообщений: история + вопрос пользователя.

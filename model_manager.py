@@ -11,7 +11,7 @@ KEY = "model"
 
 
 class ModelManager:
-    """Хранит текущее имя модели DeepSeek, персистит в SQLite."""
+    """Хранит текущее имя модели LLM (Google Gemini), персистит в SQLite."""
 
     def __init__(self, default_model: str):
         self.default_model = default_model
@@ -24,7 +24,7 @@ class ModelManager:
             value = database.get_value(TABLE, KEY)
             if value:
                 self._current_model = value
-                logger.info("Модель DeepSeek загружена из БД: %s", value)
+                logger.info("Модель LLM загружена из БД: %s", value)
             else:
                 logger.info("Модель в БД не найдена, используется по умолчанию: %s", self.default_model)
         except Exception as e:
@@ -49,4 +49,4 @@ class ModelManager:
             logger.error("Не удалось сохранить модель в БД: %s", e)
 
 
-model_manager = ModelManager(config.DEEPSEEK_MODEL)
+model_manager = ModelManager(config.GEMINI_MODEL)

@@ -32,7 +32,7 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
     await state.clear()  # на случай, если админ был в процессе какого-то из сценариев
     await message.answer(
         "🔧 <b>Админ-панель</b>\n"
-        f"Модель DeepSeek: <code>{model_manager.get()}</code>\n"
+        f"Модель LLM: <code>{model_manager.get()}</code>\n"
         f"Пользователей в базе: {user_storage.count()}\n\n"
         "Выберите действие:",
         reply_markup=admin_menu_kb(),
@@ -540,7 +540,7 @@ async def toggle_multimodal(callback: CallbackQuery) -> None:
 
 
 # ============================================================
-#  Модель DeepSeek
+#  Модель LLM (Google Gemini)
 # ============================================================
 
 @router.callback_query(F.data == "admin_change_model")
@@ -548,8 +548,8 @@ async def change_model_start(callback: CallbackQuery, state: FSMContext) -> None
     await state.set_state(AdminStates.waiting_for_model_name)
     await callback.message.answer(
         f"Текущая модель: <code>{model_manager.get()}</code>\n\n"
-        "Отправьте название новой модели DeepSeek (например, "
-        "<code>deepseek-chat</code> или <code>deepseek-reasoner</code>).",
+        "Отправьте название новой модели LLM (например, "
+        "<code>gemini-3.5-flash</code> или <code>gemini-2.5-pro</code>).",
         reply_markup=cancel_kb(),
     )
     await callback.answer()
@@ -564,7 +564,7 @@ async def change_model_finish(message: Message, state: FSMContext) -> None:
     await model_manager.set(new_model)
     await state.clear()
     await message.answer(f"✅ Модель изменена на <code>{new_model}</code>.", reply_markup=admin_menu_kb())
-    logger.info("Администратор %s сменил модель DeepSeek на %s", message.from_user.id, new_model)
+    logger.info("Администратор %s сменил модель LLM на %s", message.from_user.id, new_model)
 
 
 # ============================================================
@@ -578,7 +578,7 @@ async def show_stats(callback: CallbackQuery) -> None:
     await callback.message.answer(
         f"📊 Пользователей в базе: <b>{count}</b>\n"
         f"Из них забанено: <b>{banned}</b>\n"
-        f"Текущая модель DeepSeek: <code>{model_manager.get()}</code>"
+        f"Текущая модель LLM: <code>{model_manager.get()}</code>"
     )
     await callback.answer()
 

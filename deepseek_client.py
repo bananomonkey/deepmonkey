@@ -1,24 +1,12 @@
 import asyncio
-import json
 import logging
 import re
 from typing import Dict, List, Optional
 from urllib.parse import quote
 
-from openai import AsyncOpenAI
-
 import config
-from model_manager import model_manager
-from user_settings import MODEL_MAP
-
-_VISION_MODEL = MODEL_MAP["vision"]
 
 logger = logging.getLogger(__name__)
-
-client = AsyncOpenAI(
-    api_key=config.DEEPSEEK_API_KEY,
-    base_url=config.DEEPSEEK_BASE_URL,
-)
 
 FALLBACK_ANSWER = "⚠️ Произошла ошибка при обращении к нейросети. Попробуйте позже."
 
@@ -178,7 +166,6 @@ SEARCH_DECISION_PROMPT = (
     "«Какая погода в Москве?» → SEARCH: погода Москва сегодня\n"
     "«Курс доллара» → SEARCH: курс доллара рубль сегодня\n"
     "«Что нового в ИТ?» → SEARCH: новости IT технологии 2026\n"
-    "«Кто прилетел в Москву на военном самолёте?» → SEARCH: военные самолёты прилет Москва сегодня\n"
     "«Напиши стих» → NOSEARCH\n"
     "«Что такое контейнер?» → NOSEARCH\n"
     "«Объясни async/await» → NOSEARCH\n"
@@ -190,62 +177,174 @@ async def _ai_decides_search(
     user_text: str,
     model: Optional[str] = None,
 ) -> Optional[str]:
-    effective_model = model or model_manager.get()
+    effective_model = model or config.GEMINI_MODEL
     try:
-        response = await client.chat.completions.create(
-            model=effective_model,
-            messages=[
-                {"role": "system", "content": SEARCH_DECISION_PROMPT},
-                {"role": "user", "content": user_text},
-            ],
-            timeout=15,
+        answer = await gemini_simple_text(
+            SEARCH_DECISION_PROMPT, user_text, model=effective_model, timeout=15,
         )
-        answer = (response.choices[0].message.content or "").strip()
+        answer = (answer or "").strip()
         if answer.upper().startswith("SEARCH:"):
             query = answer[len("SEARCH:"):].strip()
             if query:
-                logger.info("AI решил искать: '%s' (для: %s)", query, user_text[:80])
+                logger.info("ИИ решил искать: '%s' (для: %s)", query, user_text[:80])
                 return query
-        logger.info("AI решил не искать: %s", user_text[:80])
+        logger.info("ИИ решил не искать: %s", user_text[:80])
         return None
     except Exception as e:
         logger.error("Ошибка при решении о поиске: %s", e)
         return None
 
 
-_IMG_URL_MARKERS = ("QRIMG=", "AVATARIMG=", "PICIMG=")
+# ---------------------------------------------------------------------------
+# Gemini низкоуровневый доступ (единая точка, с fallback на второй ключ).
+# ---------------------------------------------------------------------------
+_BASE = "https://generativelanguage.googleapis.com/v1beta"
+_SIMPLE_RETRYABLE = None
 
 
-def _extract_image_urls_from_results(results: list) -> List[str]:
-    """Вытащить URL сгенерированных картинок из текстов результатов инструментов."""
-    urls: List[str] = []
-    for r in results:
-        if isinstance(r, Exception):
+async def _gemini_send(
+    system_prompt: str,
+    messages: List[Dict],
+    model: Optional[str] = None,
+    images: Optional[List[str]] = None,
+    timeout: float = 60,
+) -> dict:
+    """Один POST к Gemini generateContent с fallback на второй API-ключ.
+
+    Сначала пробуем основной ключ; если он даёт ошибку авторизации/лимит/сбой —
+    повторяем тем же запросом со вторым ключом.
+    """
+    import httpx
+    effective_model = model or config.GEMINI_MODEL
+
+    contents: List[Dict] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if role == "system":
             continue
-        text = str(r)
-        for marker in _IMG_URL_MARKERS:
-            start = 0
-            while True:
-                idx = text.find(marker, start)
-                if idx == -1:
-                    break
-                url = text[idx + len(marker):].split(" ")[0].split("\n")[0].strip()
-                if url.startswith("http") and url not in urls:
-                    urls.append(url)
-                start = idx + len(marker)
-    return urls
+        g_role = "model" if role in ("model", "assistant") else "user"
+        if not content:
+            continue
+        contents.append({"role": g_role, "parts": [{"text": content}]})
+
+    if images:
+        parts: List[Dict] = [{"text": messages[-1].get("content", "") if messages else ""}]
+        for img in images:
+            parts.append(_data_url_to_inline(img))
+        if contents:
+            contents[-1] = {"role": "user", "parts": parts}
+        else:
+            contents.append({"role": "user", "parts": parts})
+
+    payload: Dict = {"contents": contents, "generationConfig": {}}
+    if system_prompt:
+        payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+
+    keys = [k for k in (config.GEMINI_API_KEY, config.GEMINI_API_KEY_2) if k]
+
+    async def _try(key: str) -> dict:
+        url = f"{_BASE}/{effective_model}:generateContent?key={key}"
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
+    last_exc = None
+    for key in keys:
+        try:
+            return await _try(key)
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError) as e:
+            last_exc = e
+            logger.warning("Gemini API (ключ %s...) ошибка: %s", key[-4:], e)
+            continue
+    raise last_exc if last_exc else RuntimeError("Нет API-ключей Gemini")
 
 
-def _attach_tool_images(answer: str, image_urls: List[str]) -> str:
-    if not image_urls:
-        return answer
-    missing = [u for u in image_urls if u not in answer]
-    if not missing:
-        return answer
-    block = "\n\n" + "\n".join(f"[Картинка]({u})" for u in missing)
-    return answer.strip() + block
+async def gemini_simple_text(
+    system_prompt: str,
+    user_text: str,
+    model: Optional[str] = None,
+    timeout: float = 30,
+    images: Optional[List[str]] = None,
+) -> str:
+    """Простой текстовый (и мультимодальный) запрос к Gemini, возвращает строку."""
+    try:
+        data = await _gemini_send(
+            system_prompt,
+            [{"role": "user", "content": user_text}],
+            model=model, images=images, timeout=timeout,
+        )
+    except Exception as e:
+        logger.error("Gemini simple запрос не удался: %s", e)
+        return ""
+    return _extract_text(data)
 
 
+def _extract_text(data: dict) -> str:
+    candidates = data.get("candidates") or []
+    if not candidates:
+        return ""
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    return "\n".join(p.get("text", "") for p in parts if "text" in p).strip()
+
+
+def _data_url_to_inline(data_url: str) -> Dict:
+    if data_url.startswith("data:"):
+        header, _, b64 = data_url.partition(",")
+        mime = header[5:].split(";")[0] or "image/jpeg"
+        return {"mimeType": mime, "data": b64}
+    return {"mimeType": "image/jpeg", "data": data_url}
+
+
+# ---------------------------------------------------------------------------
+# Совместимый OpenAI-подобный асинхронный клиент на базе Gemini.
+# Позволяет оставить старые вызовы client.chat.completions.create(...) без
+# правок (используется в member_knowledge).
+# ---------------------------------------------------------------------------
+class _FakeMessage:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _FakeChoices:
+    def __init__(self, content: str):
+        self.message = _FakeMessage(content)
+        self.choices = [self]
+
+
+class _FakeCompletions:
+    async def create(self, model=None, messages=None, timeout=None, **kwargs):
+        system_prompt = ""
+        user_text = ""
+        for m in messages or []:
+            if m.get("role") == "system":
+                system_prompt = m.get("content", "")
+            else:
+                # последнее user-сообщение становится запросом
+                user_text = m.get("content", "")
+        content = await gemini_simple_text(
+            system_prompt, user_text, model=model,
+            timeout=timeout if timeout else 30,
+        )
+        return _FakeChoices(content)
+
+
+class _FakeChat:
+    completions = _FakeCompletions()
+
+
+class _FakeClient:
+    chat = _FakeChat()
+
+
+# Экспортируем как `client`, чтобы старый код не ломался.
+client = _FakeClient()
+
+
+# ---------------------------------------------------------------------------
+# Основной ответ бота: Gemini с агентными инструментами.
+# ---------------------------------------------------------------------------
 async def ask_deepseek(
     system_prompt: str,
     user_text: str,
@@ -254,123 +353,11 @@ async def ask_deepseek(
     use_thinking: bool = False,
     images: Optional[List[str]] = None,
 ) -> str:
-    messages = [{"role": "system", "content": system_prompt}]
-    if history:
-        messages.extend(history)
-
-    # Мультимодальность: если переданы изображения (base64 data URL), формируем
-    # user-сообщение как список content-блоков [text, image_url, ...].
-    if images:
-        content: List[Dict] = [{"type": "text", "text": user_text}]
-        for img in images:
-            content.append({"type": "image_url", "image_url": {"url": img}})
-        messages.append({"role": "user", "content": content})
-    else:
-        messages.append({"role": "user", "content": user_text})
-
-    effective_model = model or model_manager.get()
-
-    kwargs = {
-        "model": effective_model,
-        "messages": messages,
-        "timeout": 60,
-    }
-    # Пользовательские параметры генерации (temperature, top_p, max_tokens…).
-    from gen_params import base_kwargs
-    kwargs.update(base_kwargs())
-    # При мультимодальных запросах (картинки) не добавляем thinking extra_body —
-    # vision-модели/прокси часто его не принимают вместе с image_url.
-    if use_thinking and not images:
-        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-
-    # Транзиентные сбои (таймаут/сеть/перегрузка) ретраим с небольшим бэкоффом,
-    # чтобы редкие глюки API не выбивали в фолбэк-сообщение.
-    import openai as _openai
-    _RETRYABLE = (
-        _openai.APITimeoutError,
-        _openai.APIConnectionError,
-        _openai.RateLimitError,
+    from gemini_client import ask_gemini
+    return await ask_gemini(
+        system_prompt, user_text, history=history,
+        model=model, use_thinking=use_thinking, images=images,
     )
-
-    # Агентный слой: передаём модели список API-инструментов, чтобы она сама
-    # решала, когда ей не хватает данных (время, погода, курсы, поиск и т.п.),
-    # вызывала нужный инструмент и продолжала, пока не будет готова ответить.
-    # При мультимодальных (vision) запросах инструменты не подключаем: эти
-    # модели/прокси часто не принимают tools вместе с image_url.
-    from tools import as_tools_schema, run_tool
-    if not images:
-        kwargs["tools"] = as_tools_schema()
-
-    async def _send() -> list:
-        """Одна отправка к API с ретраями. Возвращает message объект."""
-        last_exc = None
-        for attempt in range(3):
-            try:
-                resp = await client.chat.completions.create(**kwargs)
-                return resp.choices[0].message
-            except _RETRYABLE as e:
-                last_exc = e
-                if attempt < 2:
-                    await asyncio.sleep(0.8 * (attempt + 1))
-                    continue
-            except Exception as e:
-                logger.error("Ошибка запроса к DeepSeek API (не ретраим): %s", e)
-                raise
-        logger.error("Ошибка запроса к DeepSeek API после ретраев: %s", last_exc)
-        return None
-
-    MAX_TOOL_ROUNDS = 4
-    collected_images: List[str] = []
-    for _round in range(MAX_TOOL_ROUNDS):
-        msg = await _send()
-        if msg is None:
-            return _attach_tool_images(FALLBACK_ANSWER, collected_images)
-
-        tool_calls = getattr(msg, "tool_calls", None)
-        if not tool_calls:
-            answer = msg.content
-            if answer and answer.strip():
-                return _attach_tool_images(answer.strip(), collected_images)
-            return _attach_tool_images(FALLBACK_ANSWER, collected_images)
-
-        # Исполняем все вызванные инструменты параллельно.
-        calls = [
-            (tc.function.name, json.loads(tc.function.arguments or "{}"))
-            for tc in tool_calls
-        ]
-        logger.info("TOOL_CALLS (%s): %s", len(calls), [n for n, _ in calls])
-        results = await asyncio.gather(
-            *(run_tool(name, args or {}) for name, args in calls),
-            return_exceptions=True,
-        )
-        collected_images.extend(_extract_image_urls_from_results(results))
-
-        kwargs["messages"].append({
-            "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": [
-                {
-                    "type": "function",
-                    "id": tc.id,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments or "{}",
-                    },
-                }
-                for tc in tool_calls
-            ],
-        })
-        for tc, result in zip(tool_calls, results):
-            if isinstance(result, Exception):
-                result = f"Инструмент упал: {result}"
-            kwargs["messages"].append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": str(result),
-            })
-
-    # Превышен лимит итераций инструментов — вернуть последний текст, если есть.
-    return _attach_tool_images(msg.content and msg.content.strip() or FALLBACK_ANSWER, collected_images)
 
 
 async def ask_deepseek_with_search(
@@ -382,26 +369,11 @@ async def ask_deepseek_with_search(
     images: Optional[List[str]] = None,
     chat_context: Optional[str] = None,
 ) -> str:
-    # Если есть контекст из истории чата — берём его, веб-поиск не запускаем.
-    search_context = ""
-    if chat_context:
-        search_context = chat_context
-    elif not images:
-        search_query = await _ai_decides_search(user_text, model=model)
-        if search_query:
-            search_context = await web_search(search_query)
-
-    if search_context:
-        user_text = (
-            user_text
-            + "\n\n[Контекст из истории/поиска. ОБЯЗАТЕЛЬНО используй эти данные "
-            "для ответа, перескажи своими словами со ссылками на источники]:\n"
-            + search_context
-        )
-
-    return await ask_deepseek(
+    from gemini_client import ask_gemini_with_search
+    return await ask_gemini_with_search(
         system_prompt, user_text, history=history,
         model=model, use_thinking=use_thinking, images=images,
+        chat_context=chat_context,
     )
 
 
@@ -413,15 +385,9 @@ async def summarize_profile(old_profile: str, recent_messages: List[Dict[str, st
         f"Обнови заметку."
     )
     try:
-        response = await client.chat.completions.create(
-            model=model_manager.get(),
-            messages=[
-                {"role": "system", "content": PROFILE_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            timeout=30,
+        answer = await gemini_simple_text(
+            PROFILE_SYSTEM_PROMPT, user_prompt, timeout=30,
         )
-        answer = response.choices[0].message.content
         return answer.strip() if answer else old_profile
     except Exception as e:
         logger.error("Ошибка обновления профиля пользователя: %s", e)
@@ -458,15 +424,9 @@ async def summarize_member_profile(
         f"Обнови заметку об этом участнике."
     )
     try:
-        response = await client.chat.completions.create(
-            model=model_manager.get(),
-            messages=[
-                {"role": "system", "content": MEMBER_PROFILE_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            timeout=30,
+        answer = await gemini_simple_text(
+            MEMBER_PROFILE_SYSTEM_PROMPT, user_prompt, timeout=30,
         )
-        answer = response.choices[0].message.content
         return answer.strip() if answer else old_profile
     except Exception as e:
         logger.error("Ошибка обновления профиля участника группы: %s", e)
@@ -491,10 +451,10 @@ async def describe_personality(
     image: Optional[str] = None,
 ) -> str:
     """Строит описание личности участника группы по его сообщениям (экспорту)
-    и, если дано, по фото профиля (data URL, vision-моделью).
+    и, если дано, по фото профиля (data URL, мультимодальной моделью).
 
-    brevity — опциональная инструкция о длине ответа (например "одним словом"
-    или "кратко"); если задана, портрет строится соответствующего объёма.
+    brevity — опциональная инструкция о длине ответа; если задана, портрет
+    строится соответствующего объёма.
     """
     if not messages and not image:
         return "По этому участнику пока недостаточно сообщений, чтобы составить описание."
@@ -513,22 +473,11 @@ async def describe_personality(
             f"характеристика."
         )
     try:
-        kwargs = {
-            "model": model_manager.get(),
-            "messages": [
-                {"role": "system", "content": PERSONALITY_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "timeout": 30,
-        }
-        if image:
-            kwargs["model"] = _VISION_MODEL
-            kwargs["messages"][1]["content"] = [
-                {"type": "text", "text": user_prompt},
-                {"type": "image_url", "image_url": {"url": image}},
-            ]
-        response = await client.chat.completions.create(**kwargs)
-        answer = response.choices[0].message.content
+        model = config.GEMINI_VISION_MODEL if image else config.GEMINI_MODEL
+        answer = await gemini_simple_text(
+            PERSONALITY_SYSTEM_PROMPT, user_prompt, model=model,
+            timeout=30, images=[image] if image else None,
+        )
         return answer.strip() if answer else "Не удалось составить описание."
     except Exception as e:
         logger.error("Ошибка описания личности участника группы: %s", e)
@@ -536,7 +485,7 @@ async def describe_personality(
 
 
 # ---------------------------------------------------------------------------
-# Провайдер-диспетчер: маршрутизирует запросы на DeepSeek или Gemini.
+# Диспетчер (обратная совместимость): Gemini.
 # ---------------------------------------------------------------------------
 async def ask_llm_with_search(
     system_prompt: str,
@@ -547,32 +496,17 @@ async def ask_llm_with_search(
     images: Optional[List[str]] = None,
     chat_context: Optional[str] = None,
 ) -> str:
-    """Единая точка входа для ответа ИИ.
-
-    Выбирает провайдера по config.LLM_PROVIDER ("deepseek" | "gemini").
-    Наблюдаемые вспомогательные задачи (профили/личности) всегда на DeepSeek;
-    основной ответ бота — на выбранном провайдере.
-    """
-    provider = config.LLM_PROVIDER
-    if provider == "gemini":
-        from gemini_client import ask_gemini_with_search
-        # Для Gemini игнорируем выбранную пользователем модель DeepSeek — используем
-        # настроенную Gemini-модель (или vision-вариант при картинках).
-        gem_model = None
-        if images:
-            gem_vision = config.GEMINI_VISION_MODEL or config.GEMINI_MODEL
-            return await ask_gemini_with_search(
-                system_prompt, user_text, history=history,
-                model=gem_vision, use_thinking=False, images=images,
-                chat_context=chat_context,
-            )
+    from gemini_client import ask_gemini_with_search
+    if images:
+        gem_model = config.GEMINI_VISION_MODEL or config.GEMINI_MODEL
         return await ask_gemini_with_search(
             system_prompt, user_text, history=history,
-            model=gem_model, use_thinking=use_thinking, images=None,
+            model=gem_model, use_thinking=False, images=images,
             chat_context=chat_context,
         )
-    return await ask_deepseek_with_search(
+    # Для Gemini игнорируем модель DeepSeek из настроек пользователя.
+    return await ask_gemini_with_search(
         system_prompt, user_text, history=history,
-        model=model, use_thinking=use_thinking, images=images,
+        model=None, use_thinking=use_thinking, images=None,
         chat_context=chat_context,
     )

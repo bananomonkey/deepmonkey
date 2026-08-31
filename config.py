@@ -5,23 +5,23 @@ load_dotenv()
 
 # --- Обязательные переменные ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 _admin_id_raw = os.getenv("ADMIN_ID", "0")
 
 # --- Опциональные переменные (со значениями по умолчанию) ---
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")  # стартовое значение, дальше меняется через /admin
 
-# --- Провайдер LLM: "deepseek" (по умолчанию) или "gemini" ---
-# Переключает основной движок ответов (ask_deepseek_with_search -> ask_gemini_with_search).
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "deepseek").strip().lower() or "deepseek"
+# --- Провайдер LLM ---
+# Основной движок ответов — Google Gemini (полный переход, DeepSeek убран).
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower() or "gemini"
 
-# --- Альтернативный провайдер: Google Gemini ---
-# Работает через официальный REST API (generateContent). Опционально: если
-# LLM_PROVIDER=gemini, нужен ключ GEMINI_API_KEY.
+# --- Google Gemini (основной провайдер) ---
+# Работает через официальный REST API (generateContent).
+# GEMINI_API_KEY — основной ключ; GEMINI_API_KEY_2 — запасной (fallback): если
+# основной ключ не работает (ошибка авторизации/лимиты), бот автоматически
+# переключится на второй.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "")
+GEMINI_API_KEY_2 = os.getenv("GEMINI_API_KEY_2", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-3.5-flash")
 
 # --- Веб-поиск ---
 # Tavily — основной поисковик для ИИ (RAG). Бесплатно 1000 запросов/мес.
@@ -77,8 +77,8 @@ USER_SETTINGS_FILE_PATH = os.getenv("USER_SETTINGS_FILE_PATH", "user_settings.js
 if not BOT_TOKEN:
     raise ValueError("Переменная окружения BOT_TOKEN не задана!")
 
-if not DEEPSEEK_API_KEY:
-    raise ValueError("Переменная окружения DEEPSEEK_API_KEY не задана!")
+if not GEMINI_API_KEY:
+    raise ValueError("Переменная окружения GEMINI_API_KEY не задана!")
 
 try:
     ADMIN_ID = int(_admin_id_raw)

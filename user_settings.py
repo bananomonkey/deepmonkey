@@ -15,9 +15,9 @@ MULTIMODAL_KEY = "multimodal_enabled"
 DEFAULT_MODEL = "fast"
 
 MODEL_MAP = {
-    "fast": "deepseek-v4-flash",
-    "thinking": "deepseek-v4-flash",
-    "vision": "deepseek-v4-flash-vision-exp",
+    "fast": "gemini-3.5-flash",
+    "thinking": "gemini-3.5-flash",
+    "vision": "gemini-3.5-flash",
 }
 
 THINKING_PARAM_MAP = {
