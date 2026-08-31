@@ -309,11 +309,186 @@ async def _run_pokemon_info(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Инструменты: песочница кода, статусы, математика, UUID, факты
+# ---------------------------------------------------------------------------
+_PISTON_RUNNERS = "https://emkc.org/api/v2/piston/runtimes"
+_PISTON_EXECUTE = "https://emkc.org/api/v2/piston/execute"
+
+
+async def _run_code_execute(code: str, language: str = "python") -> str:
+    """Запустить код в изолированной песочнице Piston и вернуть вывод."""
+    lang = (language or "python").lower().strip()
+    try:
+        if not code or not code.strip():
+            return "Пустой код — нечего выполнять."
+    except Exception:
+        return "Ошибка чтения кода."
+
+    try:
+        async with httpx.AsyncClient(timeout=30, headers=_HEADERS) as client:
+            r = await client.get(_PISTON_RUNNERS)
+            r.raise_for_status()
+            runtimes = r.json()
+    except Exception as e:
+        logger.error("Piston runtimes: %s", e)
+        return "Песочница кода недоступна."
+
+    version = None
+    for rt in runtimes or []:
+        if str(rt.get("language", "")).lower() == lang:
+            version = rt.get("version")
+            break
+    if version is None:
+        available = ", ".join(str(rt.get("language")) for rt in (runtimes or [])[:20])
+        return f"Язык «{language}» не поддерживается. Доступны (первые): {available}."
+
+    payload = {"language": lang, "version": version, "files": [{"content": code}]}
+    try:
+        async with httpx.AsyncClient(timeout=30, headers=_HEADERS) as client:
+            resp = await client.post(_PISTON_EXECUTE, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        logger.error("Piston execute: %s", e)
+        return "Не удалось выполнить код (песочница недоступна)."
+
+    run = data.get("run", {})
+    out = (run.get("output") or "").strip()
+    stderr = (run.get("stderr") or "").strip()
+    exit_code = run.get("code")
+    parts = [f"Язык: {lang} {version}. Код возврата: {exit_code}."]
+    if out:
+        parts.append(f"Вывод:\n{out}")
+    if stderr:
+        parts.append(f"Ошибки (stderr):\n{stderr}")
+    if not out and not stderr:
+        parts.append("(нет вывода)")
+    return "\n\n".join(parts)[:4000]
+
+
+async def _run_http_cat(code: int = 404) -> str:
+    """Вернуть картинку кота по HTTP-статусу (ссылкой)."""
+    code = int(code) if str(code).isdigit() else 404
+    img_url = f"https://http.cat/{code}.jpg"
+    return f"[Кот для HTTP-статуса {code}]({img_url}) | CATIMG={img_url}"
+
+
+async def _run_site_status(url: str) -> str:
+    """Проверить доступность сайта (пинг хоста)."""
+    if not (url.startswith("http://") or url.startswith("https://")):
+        url = "https://" + url
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True,
+                                     headers=_HEADERS) as client:
+            resp = await client.get(url)
+        return (
+            f"{url}\nСтатус: {resp.status_code}. "
+            f"Время ответа: {resp.elapsed.total_seconds():.2f} с."
+        )
+    except httpx.TimeoutException:
+        return f"{url}\nТаймаут — сайт не отвечает или лежит."
+    except Exception as e:
+        return f"{url}\nНе удалось получить доступ: {type(e).__name__}."
+
+
+_NEWTON_OPS = {
+    "simplify", "factor", "derive", "integrate", "zeroes", "tangent", "area",
+    "cos", "sin", "tan", "arccos", "arcsin", "arctan", "absolute", "log",
+}
+
+
+async def _run_math_newton(op: str = "simplify", expr: str = "") -> str:
+    """Решить математическое выражение через Newton API."""
+    op = (op or "").lower().strip()
+    if op not in _NEWTON_OPS:
+        return f"Неизвестная операция «{op}». Доступны: {', '.join(sorted(_NEWTON_OPS))}."
+    if not (expr or "").strip():
+        return "Не передано выражение."
+    url = f"https://api.newton.af/v2/{op}/{urllib.parse.quote(expr)}"
+    data = await _get_json_async(url)
+    if not data:
+        return "Newton API недоступен или выражение не удалось обработать."
+    return (
+        f"Операция: {data.get('operation')}. "
+        f"Выражение: {data.get('expression')}.\nРезультат: {data.get('result')}"
+    )
+
+
+async def _run_make_uuid() -> str:
+    """Сгенерировать случайный UUID v4."""
+    import uuid
+    return str(uuid.uuid4())
+
+
+_hp_urls = {
+    "characters": "https://hp-api.onrender.com/api/characters",
+    "students": "https://hp-api.onrender.com/api/characters/students",
+    "spells": "https://hp-api.onrender.com/api/spells",
+    "houses": "https://hp-api.onrender.com/api/houses",
+}
+
+
+async def _run_hp_info(category: str = "characters", query: str = "") -> str:
+    """Данные по вселенной Гарри Поттера: персонажи, заклинания, факультеты."""
+    cat = (category or "characters").lower().strip()
+    url = _hp_urls.get(cat, _hp_urls["characters"])
+    data = await _get_json_async(url)
+    if not isinstance(data, list):
+        return "API Гарри Поттера недоступен."
+    if (query or "").strip():
+        q = query.strip().lower()
+        data = [x for x in data if q in str(x.get("name", "")).lower()]
+    if not data:
+        return "Ничего не найдено."
+    lines = []
+    for item in data[:3]:
+        name = item.get("name") or "?"
+        if cat in ("characters", "students"):
+            house = item.get("house") or "—"
+            lines.append(f"• {name} — факультет: {house}")
+        elif cat == "spells":
+            desc = item.get("description") or "—"
+            lines.append(f"• {name} — {desc}")
+        else:
+            lines.append(f"• {name}")
+    if len(data) > 3:
+        lines.append(f"... и ещё {len(data)-3} записей.")
+    return "\n".join(lines)[:1500]
+
+
+async def _run_cat_fact() -> str:
+    """Случайный факт о котах (англ.) для пересказа пользователю."""
+    data = await _get_json_async("https://catfact.ninja/fact")
+    if not data or not data.get("fact"):
+        return "Не удалось получить факт о котах."
+    return "🐱 Факт о котах (на английском — переведи пользователю на русский):\n" + data["fact"]
+
+
+# ---------------------------------------------------------------------------
 # Реестр инструментов (схемы для OpenAI/DeepSeek tools)
 # ---------------------------------------------------------------------------
 def as_tools_schema() -> list:
     """Вернуть список схем в формате OpenAI `tools` для передачи в API."""
     return _TOOL_SCHEMAS
+
+
+def as_gemini_tool_schema() -> list:
+    """Вернуть те же инструменты в формате Gemini `functionDeclarations`.
+
+    Gemini использует формат {name, description, parameters} вместо
+    OpenAI-овского {"type": "function", "function": {...}}.
+    """
+    declarations = []
+    for schema in _TOOL_SCHEMAS:
+        fn = schema.get("function", {})
+        declarations.append(
+            {
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+            }
+        )
+    return declarations
 
 
 _TOOL_SCHEMAS: list = [
@@ -484,6 +659,93 @@ _TOOL_SCHEMAS: list = [
                 "parameters": {"type": "object", "properties": {}},
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "code_execute",
+                "description": "Выполнить код в песочнице и вернуть результат (вывод/ошибки). На просьбы 'выполни код', 'запусти python/js/c++', 'что выведет эта программа'. Поддерживает десятки языков.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "description": "Исходный код для выполнения"},
+                        "language": {"type": "string", "description": "Язык программирования, напр. python, javascript, cpp", "default": "python"}
+                    },
+                    "required": ["code"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "http_cat",
+                "description": "Вернуть картинку кота для HTTP-статуса (код 100-599). Для мемного оформления ошибок и статусов. Картинка возвращается ссылкой.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "integer", "description": "HTTP-код, напр. 404, 500, 418, 200", "default": 404}
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "site_status",
+                "description": "Проверить, доступен ли сайт (пинг хоста, код и время ответа). На вопросы 'проверь, лежит ли ВК/сайт', 'доступен ли xxx'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Адрес сайта, напр. vk.com или https://example.com"}
+                    },
+                    "required": ["url"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "math_newton",
+                "description": "Решить сложный математический пример: упрощение, факторизация, производная, интеграл, корни и т.п. На просьбы 'реши интеграл', 'упрости выражение', 'найди производную', 'чему равно'. Операции: simplify, factor, derive, integrate, zeroes, tangent, area, cos, sin, tan, arccos, arcsin, arctan, absolute, log.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "op": {"type": "string", "description": "Операция: simplify, factor, derive, integrate, zeroes, tangent, area, cos, sin, tan, absolute, log и др.", "default": "simplify"},
+                        "expr": {"type": "string", "description": "Математическое выражение, напр. x^2-5x+6"}
+                    },
+                    "required": ["expr"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "make_uuid",
+                "description": "Сгенерировать случайный уникальный UUID/GUID. На просьбы 'сгенерируй uuid', 'дай уникальный id', 'случайный хеш'.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "hp_info",
+                "description": "Данные по вселенной Гарри Поттера: персонажи, студенты, заклинания, факультеты. На вопросы 'расскажи про Хогвартс', 'кто такой Гарри Поттер', 'заклинания'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "category": {"type": "string", "description": "Категория: characters, students, spells, houses", "default": "characters"},
+                        "query": {"type": "string", "description": "Поиск по имени (необязательно)"}
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "cat_fact",
+                "description": "Получить случайный факт о котах. На просьбы 'расскажи факт о котах', 'интересный факт про кошек'.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
     ]
 
 
@@ -504,6 +766,13 @@ def apis_summary() -> str:
         "anime_search": "🎌 Поиск по аниме/манге",
         "pokemon_info": "⚡ Характеристики покемонов",
         "random_user": "👤 Случайный вымышленный профиль",
+        "code_execute": "💻 Песочница кода (Piston)",
+        "http_cat": "🐱 Котики по HTTP-статусам",
+        "site_status": "📡 Проверка доступности сайта",
+        "math_newton": "📐 Математический калькулятор (Newton)",
+        "make_uuid": "🔑 Генерация UUID/GUID",
+        "hp_info": "🧙 База данных Гарри Поттера",
+        "cat_fact": "🐈 Случайные факты о котах",
     }
     for schema in _TOOL_SCHEMAS:
         fn = schema.get("function", {})
@@ -527,6 +796,13 @@ _EXECUTORS = {
     "anime_search": _run_anime_search,
     "pokemon_info": _run_pokemon_info,
     "random_user": _run_random_user,
+    "code_execute": _run_code_execute,
+    "http_cat": _run_http_cat,
+    "site_status": _run_site_status,
+    "math_newton": _run_math_newton,
+    "make_uuid": _run_make_uuid,
+    "hp_info": _run_hp_info,
+    "cat_fact": _run_cat_fact,
 }
 
 

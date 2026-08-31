@@ -533,3 +533,46 @@ async def describe_personality(
     except Exception as e:
         logger.error("Ошибка описания личности участника группы: %s", e)
         return "⚠️ Не удалось составить описание личности."
+
+
+# ---------------------------------------------------------------------------
+# Провайдер-диспетчер: маршрутизирует запросы на DeepSeek или Gemini.
+# ---------------------------------------------------------------------------
+async def ask_llm_with_search(
+    system_prompt: str,
+    user_text: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    model: Optional[str] = None,
+    use_thinking: bool = False,
+    images: Optional[List[str]] = None,
+    chat_context: Optional[str] = None,
+) -> str:
+    """Единая точка входа для ответа ИИ.
+
+    Выбирает провайдера по config.LLM_PROVIDER ("deepseek" | "gemini").
+    Наблюдаемые вспомогательные задачи (профили/личности) всегда на DeepSeek;
+    основной ответ бота — на выбранном провайдере.
+    """
+    provider = config.LLM_PROVIDER
+    if provider == "gemini":
+        from gemini_client import ask_gemini_with_search
+        # Для Gemini игнорируем выбранную пользователем модель DeepSeek — используем
+        # настроенную Gemini-модель (или vision-вариант при картинках).
+        gem_model = None
+        if images:
+            gem_vision = config.GEMINI_VISION_MODEL or config.GEMINI_MODEL
+            return await ask_gemini_with_search(
+                system_prompt, user_text, history=history,
+                model=gem_vision, use_thinking=False, images=images,
+                chat_context=chat_context,
+            )
+        return await ask_gemini_with_search(
+            system_prompt, user_text, history=history,
+            model=gem_model, use_thinking=use_thinking, images=None,
+            chat_context=chat_context,
+        )
+    return await ask_deepseek_with_search(
+        system_prompt, user_text, history=history,
+        model=model, use_thinking=use_thinking, images=images,
+        chat_context=chat_context,
+    )

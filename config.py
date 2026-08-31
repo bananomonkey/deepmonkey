@@ -12,6 +12,17 @@ _admin_id_raw = os.getenv("ADMIN_ID", "0")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")  # стартовое значение, дальше меняется через /admin
 
+# --- Провайдер LLM: "deepseek" (по умолчанию) или "gemini" ---
+# Переключает основной движок ответов (ask_deepseek_with_search -> ask_gemini_with_search).
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "deepseek").strip().lower() or "deepseek"
+
+# --- Альтернативный провайдер: Google Gemini ---
+# Работает через официальный REST API (generateContent). Опционально: если
+# LLM_PROVIDER=gemini, нужен ключ GEMINI_API_KEY.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "")
+
 # --- Веб-поиск ---
 # Tavily — основной поисковик для ИИ (RAG). Бесплатно 1000 запросов/мес.
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
